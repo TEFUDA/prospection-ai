@@ -1,36 +1,43 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import { 
   Search, 
-  Filter, 
   Upload, 
   Download,
   Plus,
   Mail,
   Eye,
-  Trash2,
   Edit,
   RefreshCw,
-  X
+  X,
+  LayoutGrid,
+  List,
+  Filter,
+  Phone,
+  Globe,
+  Flame,
+  Calendar,
+  Users
 } from 'lucide-react'
 import toast, { Toaster } from 'react-hot-toast'
 
-// Client Supabase côté client
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || '',
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 )
 
-// Types
 interface Prospect {
   id: string
   etablissement_id: string
   etablissement_nom: string
   etablissement_type: string
   etablissement_ville: string
+  etablissement_cp: string
+  etablissement_departement: string
   etablissement_telephone: string
+  etablissement_site_web: string
   contact_id: string
   contact_prenom: string
   contact_nom: string
@@ -38,20 +45,27 @@ interface Prospect {
   contact_email: string
   email_status: string
   statut_prospection: string
+  nb_emails_envoyes: number
+  nb_ouvertures: number
+  score_interet: number
+  notes: string
+  source: string
 }
 
+type ViewType = 'all' | 'kanban' | 'a_contacter' | 'hot_leads' | 'rdv_semaine'
+
 const statusColors: Record<string, string> = {
-  a_prospecter: 'bg-gray-100 text-gray-800',
-  en_cours: 'bg-blue-100 text-blue-800',
-  interesse: 'bg-yellow-100 text-yellow-800',
-  rdv_pris: 'bg-purple-100 text-purple-800',
-  client: 'bg-green-100 text-green-800',
-  pas_interesse: 'bg-red-100 text-red-800',
+  a_prospecter: 'bg-gray-100 text-gray-800 border-gray-300',
+  en_cours: 'bg-blue-100 text-blue-800 border-blue-300',
+  interesse: 'bg-yellow-100 text-yellow-800 border-yellow-300',
+  rdv_pris: 'bg-purple-100 text-purple-800 border-purple-300',
+  client: 'bg-green-100 text-green-800 border-green-300',
+  pas_interesse: 'bg-red-100 text-red-800 border-red-300',
 }
 
 const statusLabels: Record<string, string> = {
   a_prospecter: 'À prospecter',
-  en_cours: 'En cours',
+  en_cours: 'Séquence en cours',
   interesse: 'Intéressé',
   rdv_pris: 'RDV pris',
   client: 'Client',
@@ -65,6 +79,19 @@ const emailStatusColors: Record<string, string> = {
   invalide: 'bg-red-100 text-red-800',
 }
 
+const typeColors: Record<string, string> = {
+  EHPAD: 'bg-blue-500',
+  IME: 'bg-green-500',
+  ESAT: 'bg-purple-500',
+  SESSAD: 'bg-orange-500',
+  FAM: 'bg-pink-500',
+  MAS: 'bg-red-500',
+  SAMSAH: 'bg-yellow-500',
+  SAVS: 'bg-teal-500',
+  ITEP: 'bg-indigo-500',
+  CMPP: 'bg-cyan-500',
+}
+
 export default function ProspectsPage() {
   const [prospects, setProspects] = useState<Prospect[]>([])
   const [loading, setLoading] = useState(true)
@@ -73,17 +100,16 @@ export default function ProspectsPage() {
   const [filterStatus, setFilterStatus] = useState<string>('all')
   const [filterDept, setFilterDept] = useState<string>('all')
   const [selectedIds, setSelectedIds] = useState<string[]>([])
-  const [showImportModal, setShowImportModal] = useState(false)
   const [totalCount, setTotalCount] = useState(0)
   const [page, setPage] = useState(0)
+  const [currentView, setCurrentView] = useState<ViewType>('all')
+  const [selectedProspect, setSelectedProspect] = useState<Prospect | null>(null)
   const pageSize = 50
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Charger les prospects depuis Supabase
   const loadProspects = async () => {
     setLoading(true)
     try {
-      // Requête avec jointures
       let query = supabase
         .from('etablissements')
         .select(`
@@ -91,8 +117,10 @@ export default function ProspectsPage() {
           nom,
           type,
           ville,
+          code_postal,
           departement,
           telephone,
+          site_web,
           contacts (
             id,
             prenom,
@@ -100,13 +128,15 @@ export default function ProspectsPage() {
             poste,
             email,
             email_status,
+            source,
             prospection (
-              statut
+              statut,
+              notes,
+              prochaine_action
             )
           )
         `, { count: 'exact' })
         .order('created_at', { ascending: false })
-        .range(page * pageSize, (page + 1) * pageSize - 1)
 
       // Filtres
       if (filterType !== 'all') {
@@ -119,6 +149,9 @@ export default function ProspectsPage() {
         query = query.or(`nom.ilike.%${search}%,ville.ilike.%${search}%`)
       }
 
+      // Pagination
+      query = query.range(page * pageSize, (page + 1) * pageSize - 1)
+
       const { data, error, count } = await query
 
       if (error) {
@@ -127,7 +160,6 @@ export default function ProspectsPage() {
         return
       }
 
-      // Transformer les données
       const formattedProspects: Prospect[] = (data || []).map((etab: any) => {
         const contact = etab.contacts?.[0] || {}
         const prospection = contact.prospection?.[0] || {}
@@ -138,14 +170,22 @@ export default function ProspectsPage() {
           etablissement_nom: etab.nom || '',
           etablissement_type: etab.type || '',
           etablissement_ville: etab.ville || '',
+          etablissement_cp: etab.code_postal || '',
+          etablissement_departement: etab.departement || '',
           etablissement_telephone: etab.telephone || '',
+          etablissement_site_web: etab.site_web || '',
           contact_id: contact.id || '',
           contact_prenom: contact.prenom || '',
           contact_nom: contact.nom || '',
-          contact_poste: contact.poste || '',
+          contact_poste: contact.poste || 'Directeur',
           contact_email: contact.email || '',
           email_status: contact.email_status || 'a_trouver',
           statut_prospection: prospection.statut || 'a_prospecter',
+          nb_emails_envoyes: 0,
+          nb_ouvertures: 0,
+          score_interet: calculateScore(contact, prospection),
+          notes: prospection.notes || '',
+          source: contact.source || 'finess_import',
         }
       })
 
@@ -159,12 +199,20 @@ export default function ProspectsPage() {
     }
   }
 
-  // Charger au montage et quand les filtres changent
+  // Calculer le score d'intérêt
+  const calculateScore = (contact: any, prospection: any) => {
+    let score = 0
+    if (contact.email) score += 20
+    if (contact.email_status === 'valide') score += 30
+    if (prospection.statut === 'interesse') score += 40
+    if (prospection.statut === 'rdv_pris') score += 60
+    return score
+  }
+
   useEffect(() => {
     loadProspects()
   }, [page, filterType, filterDept])
 
-  // Recherche avec debounce
   useEffect(() => {
     const timer = setTimeout(() => {
       setPage(0)
@@ -173,12 +221,39 @@ export default function ProspectsPage() {
     return () => clearTimeout(timer)
   }, [search])
 
-  // Filtrer localement par statut
-  const filteredProspects = prospects.filter(p => {
-    return filterStatus === 'all' || p.statut_prospection === filterStatus
-  })
+  // Filtrer selon la vue
+  const getFilteredProspects = () => {
+    let filtered = prospects
 
-  // Sélectionner tout
+    // Filtre par statut local
+    if (filterStatus !== 'all') {
+      filtered = filtered.filter(p => p.statut_prospection === filterStatus)
+    }
+
+    // Filtres par vue
+    switch (currentView) {
+      case 'a_contacter':
+        filtered = filtered.filter(p => 
+          p.statut_prospection === 'a_prospecter' && 
+          (p.email_status === 'valide' || p.email_status === 'trouve')
+        )
+        break
+      case 'hot_leads':
+        filtered = filtered.filter(p => p.score_interet > 30)
+        break
+      case 'rdv_semaine':
+        filtered = filtered.filter(p => p.statut_prospection === 'rdv_pris')
+        break
+    }
+
+    return filtered
+  }
+
+  const filteredProspects = getFilteredProspects()
+
+  // Grouper par statut pour Kanban
+  const kanbanColumns = ['a_prospecter', 'en_cours', 'interesse', 'rdv_pris', 'client']
+
   const toggleSelectAll = () => {
     if (selectedIds.length === filteredProspects.length) {
       setSelectedIds([])
@@ -187,27 +262,28 @@ export default function ProspectsPage() {
     }
   }
 
-  // Toggle sélection
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => 
       prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
     )
   }
 
-  // Types uniques pour le filtre
-  const uniqueTypes = Array.from(new Set(prospects.map(p => p.etablissement_type))).filter(Boolean)
+  // Stats par type
+  const typeStats = prospects.reduce((acc, p) => {
+    acc[p.etablissement_type] = (acc[p.etablissement_type] || 0) + 1
+    return acc
+  }, {} as Record<string, number>)
 
   return (
     <div className="p-8">
       <Toaster position="top-right" />
       
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Prospects</h1>
           <p className="text-gray-500 mt-1">
             {totalCount} établissements au total
-            {filteredProspects.length !== totalCount && ` (${filteredProspects.length} affichés)`}
           </p>
         </div>
         <div className="flex gap-3">
@@ -219,12 +295,9 @@ export default function ProspectsPage() {
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             Actualiser
           </button>
-          <button 
-            onClick={() => setShowImportModal(true)}
-            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center gap-2"
-          >
-            <Upload className="w-4 h-4" />
-            Importer
+          <button className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center gap-2">
+            <Download className="w-4 h-4" />
+            Exporter
           </button>
           <button className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 flex items-center gap-2">
             <Plus className="w-4 h-4" />
@@ -233,10 +306,58 @@ export default function ProspectsPage() {
         </div>
       </div>
 
+      {/* Vue Tabs */}
+      <div className="flex gap-2 mb-6 border-b border-gray-200 pb-4">
+        <button
+          onClick={() => setCurrentView('all')}
+          className={`px-4 py-2 rounded-lg flex items-center gap-2 transition-colors ${
+            currentView === 'all' ? 'bg-purple-100 text-purple-700' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          <List className="w-4 h-4" />
+          Tous ({totalCount})
+        </button>
+        <button
+          onClick={() => setCurrentView('kanban')}
+          className={`px-4 py-2 rounded-lg flex items-center gap-2 transition-colors ${
+            currentView === 'kanban' ? 'bg-purple-100 text-purple-700' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          <LayoutGrid className="w-4 h-4" />
+          Kanban
+        </button>
+        <button
+          onClick={() => setCurrentView('a_contacter')}
+          className={`px-4 py-2 rounded-lg flex items-center gap-2 transition-colors ${
+            currentView === 'a_contacter' ? 'bg-purple-100 text-purple-700' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          <Mail className="w-4 h-4" />
+          À contacter
+        </button>
+        <button
+          onClick={() => setCurrentView('hot_leads')}
+          className={`px-4 py-2 rounded-lg flex items-center gap-2 transition-colors ${
+            currentView === 'hot_leads' ? 'bg-purple-100 text-purple-700' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          <Flame className="w-4 h-4" />
+          Hot Leads 🔥
+        </button>
+        <button
+          onClick={() => setCurrentView('rdv_semaine')}
+          className={`px-4 py-2 rounded-lg flex items-center gap-2 transition-colors ${
+            currentView === 'rdv_semaine' ? 'bg-purple-100 text-purple-700' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          <Calendar className="w-4 h-4" />
+          RDV
+        </button>
+      </div>
+
       {/* Filters */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
         <div className="flex flex-wrap gap-4">
-          {/* Search */}
           <div className="flex-1 min-w-64">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
@@ -250,39 +371,28 @@ export default function ProspectsPage() {
             </div>
           </div>
 
-          {/* Type filter */}
           <select
             value={filterType}
             onChange={(e) => { setFilterType(e.target.value); setPage(0) }}
             className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
           >
             <option value="all">Tous les types</option>
-            <option value="EHPAD">EHPAD ({prospects.filter(p => p.etablissement_type === 'EHPAD').length})</option>
-            <option value="IME">IME</option>
-            <option value="ESAT">ESAT</option>
-            <option value="SESSAD">SESSAD</option>
-            <option value="FAM">FAM</option>
-            <option value="MAS">MAS</option>
-            <option value="SAMSAH">SAMSAH</option>
-            <option value="SAVS">SAVS</option>
-            <option value="ITEP">ITEP</option>
+            {Object.entries(typeStats).sort((a, b) => b[1] - a[1]).map(([type, count]) => (
+              <option key={type} value={type}>{type} ({count})</option>
+            ))}
           </select>
 
-          {/* Status filter */}
           <select
             value={filterStatus}
             onChange={(e) => setFilterStatus(e.target.value)}
             className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500"
           >
             <option value="all">Tous les statuts</option>
-            <option value="a_prospecter">À prospecter</option>
-            <option value="en_cours">En cours</option>
-            <option value="interesse">Intéressé</option>
-            <option value="rdv_pris">RDV pris</option>
-            <option value="client">Client</option>
+            {Object.entries(statusLabels).map(([key, label]) => (
+              <option key={key} value={key}>{label}</option>
+            ))}
           </select>
 
-          {/* Département filter */}
           <select
             value={filterDept}
             onChange={(e) => { setFilterDept(e.target.value); setPage(0) }}
@@ -297,39 +407,80 @@ export default function ProspectsPage() {
           </select>
         </div>
 
-        {/* Bulk actions */}
         {selectedIds.length > 0 && (
           <div className="mt-4 pt-4 border-t border-gray-200 flex items-center gap-4">
-            <span className="text-sm text-gray-600">
-              {selectedIds.length} sélectionné(s)
-            </span>
+            <span className="text-sm text-gray-600">{selectedIds.length} sélectionné(s)</span>
             <button className="px-3 py-1 bg-purple-600 text-white rounded-lg text-sm flex items-center gap-1">
               <Mail className="w-4 h-4" />
-              Envoyer email
+              Envoyer séquence
             </button>
             <button className="px-3 py-1 border border-gray-300 rounded-lg text-sm flex items-center gap-1">
               <Download className="w-4 h-4" />
               Exporter
             </button>
-            <button 
-              onClick={() => setSelectedIds([])}
-              className="text-sm text-gray-500 hover:text-gray-700"
-            >
+            <button onClick={() => setSelectedIds([])} className="text-sm text-gray-500 hover:text-gray-700">
               Désélectionner
             </button>
           </div>
         )}
       </div>
 
-      {/* Table */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-        {loading ? (
-          <div className="flex items-center justify-center py-20">
-            <RefreshCw className="w-8 h-8 animate-spin text-purple-600" />
-            <span className="ml-3 text-gray-600">Chargement...</span>
-          </div>
-        ) : (
-          <>
+      {/* Content based on view */}
+      {loading ? (
+        <div className="flex items-center justify-center py-20">
+          <RefreshCw className="w-8 h-8 animate-spin text-purple-600" />
+          <span className="ml-3 text-gray-600">Chargement...</span>
+        </div>
+      ) : currentView === 'kanban' ? (
+        /* KANBAN VIEW */
+        <div className="flex gap-4 overflow-x-auto pb-4">
+          {kanbanColumns.map(status => {
+            const columnProspects = prospects.filter(p => p.statut_prospection === status)
+            return (
+              <div key={status} className="flex-shrink-0 w-72">
+                <div className={`rounded-t-lg px-4 py-2 ${statusColors[status]} border-b-2`}>
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium">{statusLabels[status]}</span>
+                    <span className="bg-white/50 px-2 py-0.5 rounded-full text-sm">{columnProspects.length}</span>
+                  </div>
+                </div>
+                <div className="bg-gray-50 rounded-b-lg p-2 min-h-96 space-y-2">
+                  {columnProspects.slice(0, 10).map(prospect => (
+                    <div 
+                      key={prospect.id} 
+                      className="bg-white rounded-lg p-3 shadow-sm border border-gray-200 cursor-pointer hover:shadow-md transition-shadow"
+                      onClick={() => setSelectedProspect(prospect)}
+                    >
+                      <div className="flex items-start justify-between mb-2">
+                        <span className={`px-2 py-0.5 rounded text-xs text-white ${typeColors[prospect.etablissement_type] || 'bg-gray-500'}`}>
+                          {prospect.etablissement_type}
+                        </span>
+                        {prospect.score_interet > 30 && <Flame className="w-4 h-4 text-orange-500" />}
+                      </div>
+                      <p className="font-medium text-gray-900 text-sm truncate">{prospect.etablissement_nom}</p>
+                      <p className="text-xs text-gray-500">{prospect.etablissement_ville}</p>
+                      <div className="mt-2 flex items-center gap-2 text-xs text-gray-400">
+                        <span>{prospect.contact_poste}</span>
+                        <span className={`px-1.5 py-0.5 rounded ${emailStatusColors[prospect.email_status]}`}>
+                          {prospect.email_status}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                  {columnProspects.length > 10 && (
+                    <p className="text-center text-sm text-gray-500 py-2">
+                      +{columnProspects.length - 10} autres...
+                    </p>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      ) : (
+        /* TABLE VIEW */
+        <>
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead className="bg-gray-50 border-b border-gray-200">
@@ -348,6 +499,7 @@ export default function ProspectsPage() {
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Contact</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Email</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Statut</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Score</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Actions</th>
                   </tr>
                 </thead>
@@ -366,30 +518,36 @@ export default function ProspectsPage() {
                         <p className="font-medium text-gray-900 truncate max-w-xs" title={prospect.etablissement_nom}>
                           {prospect.etablissement_nom}
                         </p>
-                        {prospect.etablissement_telephone && (
-                          <p className="text-xs text-gray-500">{prospect.etablissement_telephone}</p>
-                        )}
+                        <div className="flex items-center gap-2 mt-1">
+                          {prospect.etablissement_telephone && (
+                            <a href={`tel:${prospect.etablissement_telephone}`} className="text-xs text-gray-500 hover:text-purple-600 flex items-center gap-1">
+                              <Phone className="w-3 h-3" />
+                              {prospect.etablissement_telephone}
+                            </a>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3">
-                        <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-medium">
+                        <span className={`px-2 py-1 rounded text-xs text-white ${typeColors[prospect.etablissement_type] || 'bg-gray-500'}`}>
                           {prospect.etablissement_type}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-gray-600">
-                        {prospect.etablissement_ville}
+                      <td className="px-4 py-3">
+                        <p className="text-gray-600">{prospect.etablissement_ville}</p>
+                        <p className="text-xs text-gray-400">{prospect.etablissement_departement}</p>
                       </td>
                       <td className="px-4 py-3">
                         <p className="font-medium">
                           {prospect.contact_prenom} {prospect.contact_nom}
                         </p>
-                        <p className="text-xs text-gray-500">{prospect.contact_poste || 'Directeur'}</p>
+                        <p className="text-xs text-gray-500">{prospect.contact_poste}</p>
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-col gap-1">
                           <span className="text-sm truncate max-w-32" title={prospect.contact_email}>
                             {prospect.contact_email || '-'}
                           </span>
-                          <span className={`px-2 py-0.5 rounded-full text-xs ${emailStatusColors[prospect.email_status] || 'bg-gray-100'}`}>
+                          <span className={`px-2 py-0.5 rounded-full text-xs w-fit ${emailStatusColors[prospect.email_status] || 'bg-gray-100'}`}>
                             {prospect.email_status}
                           </span>
                         </div>
@@ -401,16 +559,32 @@ export default function ProspectsPage() {
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1">
-                          <button className="p-1 text-gray-400 hover:text-purple-600" title="Voir">
+                          <span className={`text-lg font-bold ${prospect.score_interet > 50 ? 'text-green-600' : prospect.score_interet > 20 ? 'text-yellow-600' : 'text-gray-400'}`}>
+                            {prospect.score_interet}
+                          </span>
+                          {prospect.score_interet > 50 && <Flame className="w-4 h-4 text-orange-500" />}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1">
+                          <button 
+                            onClick={() => setSelectedProspect(prospect)}
+                            className="p-1 text-gray-400 hover:text-purple-600"
+                          >
                             <Eye className="w-4 h-4" />
                           </button>
-                          <button className="p-1 text-gray-400 hover:text-blue-600" title="Éditer">
+                          <button className="p-1 text-gray-400 hover:text-blue-600">
                             <Edit className="w-4 h-4" />
                           </button>
                           {prospect.contact_email && (
-                            <button className="p-1 text-gray-400 hover:text-green-600" title="Envoyer email">
+                            <a href={`mailto:${prospect.contact_email}`} className="p-1 text-gray-400 hover:text-green-600">
                               <Mail className="w-4 h-4" />
-                            </button>
+                            </a>
+                          )}
+                          {prospect.etablissement_telephone && (
+                            <a href={`tel:${prospect.etablissement_telephone}`} className="p-1 text-gray-400 hover:text-blue-600">
+                              <Phone className="w-4 h-4" />
+                            </a>
                           )}
                         </div>
                       </td>
@@ -424,20 +598,20 @@ export default function ProspectsPage() {
             {totalCount > pageSize && (
               <div className="px-4 py-3 border-t border-gray-200 flex items-center justify-between">
                 <p className="text-sm text-gray-600">
-                  Page {page + 1} sur {Math.ceil(totalCount / pageSize)}
+                  Page {page + 1} sur {Math.ceil(totalCount / pageSize)} • {filteredProspects.length} résultats
                 </p>
                 <div className="flex gap-2">
                   <button
                     onClick={() => setPage(p => Math.max(0, p - 1))}
                     disabled={page === 0}
-                    className="px-3 py-1 border border-gray-300 rounded-lg disabled:opacity-50"
+                    className="px-3 py-1 border border-gray-300 rounded-lg disabled:opacity-50 hover:bg-gray-50"
                   >
                     Précédent
                   </button>
                   <button
                     onClick={() => setPage(p => p + 1)}
                     disabled={(page + 1) * pageSize >= totalCount}
-                    className="px-3 py-1 border border-gray-300 rounded-lg disabled:opacity-50"
+                    className="px-3 py-1 border border-gray-300 rounded-lg disabled:opacity-50 hover:bg-gray-50"
                   >
                     Suivant
                   </button>
@@ -447,51 +621,131 @@ export default function ProspectsPage() {
 
             {filteredProspects.length === 0 && !loading && (
               <div className="text-center py-12">
+                <Users className="w-12 h-12 text-gray-300 mx-auto mb-4" />
                 <p className="text-gray-500">Aucun prospect trouvé</p>
-                <button 
-                  onClick={loadProspects}
-                  className="mt-4 text-purple-600 hover:text-purple-800"
-                >
-                  Actualiser
-                </button>
               </div>
             )}
-          </>
-        )}
-      </div>
+          </div>
+        </>
+      )}
 
-      {/* Import Modal */}
-      {showImportModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl p-6 max-w-md w-full mx-4">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold">Importer des prospects</h3>
-              <button 
-                onClick={() => setShowImportModal(false)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="w-5 h-5" />
+      {/* Detail Modal */}
+      {selectedProspect && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-gray-200 flex items-center justify-between sticky top-0 bg-white">
+              <h2 className="text-xl font-bold text-gray-900">{selectedProspect.etablissement_nom}</h2>
+              <button onClick={() => setSelectedProspect(null)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-6 h-6" />
               </button>
             </div>
-            
-            <p className="text-gray-600 text-sm mb-4">
-              L'import se fait automatiquement via le CRON. 
-              Cliquez sur "Actualiser" pour voir les nouveaux prospects.
-            </p>
+            <div className="p-6 space-y-6">
+              {/* Établissement */}
+              <div>
+                <h3 className="font-semibold text-gray-900 mb-3">Établissement</h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-sm text-gray-500">Type</p>
+                    <span className={`px-2 py-1 rounded text-xs text-white ${typeColors[selectedProspect.etablissement_type] || 'bg-gray-500'}`}>
+                      {selectedProspect.etablissement_type}
+                    </span>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Ville</p>
+                    <p className="font-medium">{selectedProspect.etablissement_ville}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Département</p>
+                    <p className="font-medium">{selectedProspect.etablissement_departement}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Code postal</p>
+                    <p className="font-medium">{selectedProspect.etablissement_cp || '-'}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Téléphone</p>
+                    {selectedProspect.etablissement_telephone ? (
+                      <a href={`tel:${selectedProspect.etablissement_telephone}`} className="font-medium text-purple-600 hover:underline">
+                        {selectedProspect.etablissement_telephone}
+                      </a>
+                    ) : <p>-</p>}
+                  </div>
+                </div>
+              </div>
 
-            <div className="flex justify-end gap-3 mt-6">
-              <button 
-                onClick={() => setShowImportModal(false)}
-                className="px-4 py-2 border border-gray-300 rounded-lg"
-              >
-                Fermer
-              </button>
-              <button 
-                onClick={() => { setShowImportModal(false); loadProspects() }}
-                className="px-4 py-2 bg-purple-600 text-white rounded-lg"
-              >
-                Actualiser
-              </button>
+              {/* Contact */}
+              <div>
+                <h3 className="font-semibold text-gray-900 mb-3">Contact</h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-sm text-gray-500">Nom</p>
+                    <p className="font-medium">{selectedProspect.contact_prenom} {selectedProspect.contact_nom || '-'}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Poste</p>
+                    <p className="font-medium">{selectedProspect.contact_poste}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Email</p>
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium">{selectedProspect.contact_email || '-'}</p>
+                      <span className={`px-2 py-0.5 rounded-full text-xs ${emailStatusColors[selectedProspect.email_status]}`}>
+                        {selectedProspect.email_status}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Prospection */}
+              <div>
+                <h3 className="font-semibold text-gray-900 mb-3">Prospection</h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-sm text-gray-500">Statut</p>
+                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColors[selectedProspect.statut_prospection]}`}>
+                      {statusLabels[selectedProspect.statut_prospection]}
+                    </span>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Score</p>
+                    <div className="flex items-center gap-2">
+                      <span className="text-2xl font-bold text-gray-900">{selectedProspect.score_interet}</span>
+                      {selectedProspect.score_interet > 50 && <Flame className="w-5 h-5 text-orange-500" />}
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Source</p>
+                    <p className="font-medium">{selectedProspect.source}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex gap-3 pt-4 border-t border-gray-200">
+                {selectedProspect.contact_email && (
+                  <a 
+                    href={`mailto:${selectedProspect.contact_email}`}
+                    className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 flex items-center gap-2"
+                  >
+                    <Mail className="w-4 h-4" />
+                    Envoyer email
+                  </a>
+                )}
+                {selectedProspect.etablissement_telephone && (
+                  <a 
+                    href={`tel:${selectedProspect.etablissement_telephone}`}
+                    className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center gap-2"
+                  >
+                    <Phone className="w-4 h-4" />
+                    Appeler
+                  </a>
+                )}
+                <button className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center gap-2">
+                  <Edit className="w-4 h-4" />
+                  Modifier
+                </button>
+              </div>
             </div>
           </div>
         </div>
