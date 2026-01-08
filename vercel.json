@@ -1,13 +1,16 @@
 {
   "crons": [
     {
-      "path": "/api/cron/master",
-      "schedule": "0 9 * * 1-5"
+      "path": "/api/cron/sequences",
+      "schedule": "0 9,14 * * 1-5"
+    },
+    {
+      "path": "/api/cron/enrich",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/validate",
+      "schedule": "0 7 * * *"
     }
-  ],
-  "functions": {
-    "app/api/cron/**/*.ts": {
-      "maxDuration": 60
-    }
-  }
+  ]
 }
