@@ -1,262 +1,361 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { supabaseAdmin } from '@/lib/supabase'
-import { findEmail, verifyEmail as hunterVerify, searchDomain } from '@/lib/hunter'
-import { validateEmail, mapZeroBounceStatus } from '@/lib/zerobounce'
+import { createClient } from '@supabase/supabase-js'
 
-// Enrichir un contact (trouver son email)
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+  process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+)
+
+const HUNTER_API_KEY = process.env.HUNTER_API_KEY
+const ZEROBOUNCE_API_KEY = process.env.ZEROBOUNCE_API_KEY
+
+// Postes à rechercher par type d'établissement
+const POSTES_PAR_TYPE: Record<string, string[]> = {
+  EHPAD: ['Directeur', 'IDEC', 'Médecin coordonnateur', 'Cadre de santé', 'Responsable RH'],
+  IME: ['Directeur', 'Chef de service éducatif', 'Psychologue', 'Médecin'],
+  ESAT: ['Directeur', 'Moniteur principal', 'Chef de production', 'Responsable RH'],
+  FAM: ['Directeur', 'Chef de service', 'Cadre de santé', 'Psychologue'],
+  MAS: ['Directeur', 'IDEC', 'Médecin coordonnateur', 'Cadre de santé'],
+  SESSAD: ['Directeur', 'Chef de service', 'Coordinateur'],
+  SAMSAH: ['Directeur', 'Chef de service', 'Coordinateur'],
+  SAVS: ['Directeur', 'Chef de service'],
+  ITEP: ['Directeur', 'Chef de service éducatif', 'Psychologue'],
+  DEFAULT: ['Directeur', 'Responsable', 'Adjoint de direction']
+}
+
+// Rechercher le domaine email d'un établissement via Hunter
+async function findDomain(etablissementNom: string, ville: string): Promise<string | null> {
+  if (!HUNTER_API_KEY) return null
+  
+  try {
+    // Essayer de trouver le site web via recherche
+    const searchQuery = encodeURIComponent(`${etablissementNom} ${ville}`)
+    const response = await fetch(
+      `https://api.hunter.io/v2/domain-search?company=${searchQuery}&api_key=${HUNTER_API_KEY}`
+    )
+    const data = await response.json()
+    
+    if (data.data?.domain) {
+      return data.data.domain
+    }
+    return null
+  } catch (err) {
+    console.error('Hunter domain search error:', err)
+    return null
+  }
+}
+
+// Rechercher des emails via Hunter Domain Search
+async function searchEmails(domain: string): Promise<any[]> {
+  if (!HUNTER_API_KEY || !domain) return []
+  
+  try {
+    const response = await fetch(
+      `https://api.hunter.io/v2/domain-search?domain=${domain}&api_key=${HUNTER_API_KEY}&limit=10`
+    )
+    const data = await response.json()
+    
+    if (data.data?.emails) {
+      return data.data.emails
+    }
+    return []
+  } catch (err) {
+    console.error('Hunter search error:', err)
+    return []
+  }
+}
+
+// Générer des patterns d'email possibles
+function generateEmailPatterns(prenom: string, nom: string, domain: string): string[] {
+  const p = prenom.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  const n = nom.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  
+  return [
+    `${p}.${n}@${domain}`,
+    `${p}${n}@${domain}`,
+    `${p[0]}.${n}@${domain}`,
+    `${p[0]}${n}@${domain}`,
+    `${n}.${p}@${domain}`,
+    `${n}@${domain}`,
+    `contact@${domain}`,
+    `direction@${domain}`,
+  ]
+}
+
+// Vérifier un email via Hunter Email Verifier
+async function verifyEmailHunter(email: string): Promise<{ valid: boolean; score: number }> {
+  if (!HUNTER_API_KEY) return { valid: false, score: 0 }
+  
+  try {
+    const response = await fetch(
+      `https://api.hunter.io/v2/email-verifier?email=${email}&api_key=${HUNTER_API_KEY}`
+    )
+    const data = await response.json()
+    
+    return {
+      valid: data.data?.result === 'deliverable',
+      score: data.data?.score || 0
+    }
+  } catch (err) {
+    return { valid: false, score: 0 }
+  }
+}
+
+// Vérifier un email via ZeroBounce
+async function verifyEmailZeroBounce(email: string): Promise<{ valid: boolean; status: string }> {
+  if (!ZEROBOUNCE_API_KEY) return { valid: false, status: 'unknown' }
+  
+  try {
+    const response = await fetch(
+      `https://api.zerobounce.net/v2/validate?api_key=${ZEROBOUNCE_API_KEY}&email=${email}`
+    )
+    const data = await response.json()
+    
+    return {
+      valid: data.status === 'valid',
+      status: data.status
+    }
+  } catch (err) {
+    return { valid: false, status: 'error' }
+  }
+}
+
+// Trouver un email via Hunter Email Finder
+async function findEmail(domain: string, firstName: string, lastName: string): Promise<string | null> {
+  if (!HUNTER_API_KEY || !domain) return null
+  
+  try {
+    const response = await fetch(
+      `https://api.hunter.io/v2/email-finder?domain=${domain}&first_name=${firstName}&last_name=${lastName}&api_key=${HUNTER_API_KEY}`
+    )
+    const data = await response.json()
+    
+    if (data.data?.email) {
+      return data.data.email
+    }
+    return null
+  } catch (err) {
+    return null
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { contactId, firstName, lastName, domain, company } = body
+    const { action, etablissement_id, contact_id, email } = await request.json()
 
-    if (!domain || (!firstName && !lastName)) {
-      return NextResponse.json(
-        { error: 'Missing required fields: domain and (firstName or lastName)' },
-        { status: 400 }
-      )
-    }
+    switch (action) {
+      case 'find_domain': {
+        // Trouver le domaine d'un établissement
+        const { data: etab } = await supabase
+          .from('etablissements')
+          .select('*')
+          .eq('id', etablissement_id)
+          .single()
 
-    // 1. Chercher l'email avec Hunter
-    const hunterResult = await findEmail({
-      domain,
-      firstName,
-      lastName,
-      company,
-    })
+        if (!etab) return NextResponse.json({ error: 'Établissement non trouvé' }, { status: 404 })
 
-    if (!hunterResult || !hunterResult.email) {
-      return NextResponse.json({
-        success: false,
-        message: 'Email not found',
-        hunterResult: null,
-      })
-    }
-
-    // 2. Valider l'email avec ZeroBounce
-    const zbResult = await validateEmail(hunterResult.email)
-    const emailStatus = zbResult ? mapZeroBounceStatus(zbResult.status) : 'a_verifier'
-
-    // 3. Si on a un contactId, mettre à jour dans la base
-    if (contactId) {
-      await supabaseAdmin
-        .from('contacts')
-        .update({
-          email: hunterResult.email,
-          email_status: emailStatus,
-          linkedin_url: hunterResult.linkedin_url,
-          source: 'hunter',
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', contactId)
-    }
-
-    return NextResponse.json({
-      success: true,
-      email: hunterResult.email,
-      emailStatus,
-      score: hunterResult.score,
-      linkedin: hunterResult.linkedin_url,
-      phone: hunterResult.phone_number,
-      validation: zbResult ? {
-        status: zbResult.status,
-        subStatus: zbResult.sub_status,
-        freeEmail: zbResult.free_email,
-      } : null,
-    })
-
-  } catch (error: any) {
-    console.error('Enrich contact error:', error)
-    return NextResponse.json(
-      { error: error.message || 'Failed to enrich contact' },
-      { status: 500 }
-    )
-  }
-}
-
-// Enrichir plusieurs contacts en batch
-export async function PUT(request: NextRequest) {
-  try {
-    const body = await request.json()
-    const { contactIds } = body
-
-    if (!contactIds || contactIds.length === 0) {
-      return NextResponse.json(
-        { error: 'No contacts provided' },
-        { status: 400 }
-      )
-    }
-
-    // Récupérer les contacts
-    const { data: contacts, error } = await supabaseAdmin
-      .from('contacts')
-      .select('*, etablissements(*)')
-      .in('id', contactIds)
-      .eq('email_status', 'a_trouver')
-
-    if (error || !contacts) {
-      return NextResponse.json(
-        { error: 'Failed to fetch contacts' },
-        { status: 500 }
-      )
-    }
-
-    const results = {
-      processed: 0,
-      found: 0,
-      validated: 0,
-      errors: [] as string[],
-    }
-
-    for (const contact of contacts) {
-      results.processed++
-
-      // Extraire le domaine du site web ou de l'email générique
-      let domain = ''
-      if (contact.etablissements?.site_web) {
-        domain = contact.etablissements.site_web
-          .replace(/^https?:\/\//, '')
-          .replace(/^www\./, '')
-          .split('/')[0]
-      } else if (contact.etablissements?.email_generique) {
-        domain = contact.etablissements.email_generique.split('@')[1]
-      }
-
-      if (!domain) {
-        results.errors.push(`${contact.prenom} ${contact.nom}: No domain found`)
-        continue
-      }
-
-      try {
-        // Chercher l'email
-        const hunterResult = await findEmail({
-          domain,
-          firstName: contact.prenom,
-          lastName: contact.nom,
-          company: contact.etablissements?.nom,
-        })
-
-        if (hunterResult?.email) {
-          results.found++
-
-          // Valider l'email
-          const zbResult = await validateEmail(hunterResult.email)
-          const emailStatus = zbResult ? mapZeroBounceStatus(zbResult.status) : 'a_verifier'
-
-          if (emailStatus === 'valid') {
-            results.validated++
-          }
-
-          // Mettre à jour le contact
-          await supabaseAdmin
-            .from('contacts')
-            .update({
-              email: hunterResult.email,
-              email_status: emailStatus,
-              linkedin_url: hunterResult.linkedin_url || contact.linkedin_url,
-              source: 'hunter',
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', contact.id)
-        }
-
-        // Rate limiting
-        await new Promise(resolve => setTimeout(resolve, 500))
-
-      } catch (err: any) {
-        results.errors.push(`${contact.prenom} ${contact.nom}: ${err.message}`)
-      }
-    }
-
-    return NextResponse.json({
-      success: true,
-      results,
-    })
-
-  } catch (error: any) {
-    console.error('Batch enrich error:', error)
-    return NextResponse.json(
-      { error: error.message || 'Failed to enrich contacts' },
-      { status: 500 }
-    )
-  }
-}
-
-// Valider des emails existants
-export async function PATCH(request: NextRequest) {
-  try {
-    const body = await request.json()
-    const { contactIds } = body
-
-    if (!contactIds || contactIds.length === 0) {
-      return NextResponse.json(
-        { error: 'No contacts provided' },
-        { status: 400 }
-      )
-    }
-
-    // Récupérer les contacts avec email à vérifier
-    const { data: contacts, error } = await supabaseAdmin
-      .from('contacts')
-      .select('id, email')
-      .in('id', contactIds)
-      .in('email_status', ['a_verifier', 'a_trouver'])
-      .not('email', 'is', null)
-
-    if (error || !contacts) {
-      return NextResponse.json(
-        { error: 'Failed to fetch contacts' },
-        { status: 500 }
-      )
-    }
-
-    const results = {
-      processed: 0,
-      valid: 0,
-      invalid: 0,
-      errors: [] as string[],
-    }
-
-    for (const contact of contacts) {
-      if (!contact.email) continue
-      
-      results.processed++
-
-      try {
-        const zbResult = await validateEmail(contact.email)
+        const domain = await findDomain(etab.nom, etab.ville)
         
-        if (zbResult) {
-          const emailStatus = mapZeroBounceStatus(zbResult.status)
-          
-          if (emailStatus === 'valid') results.valid++
-          if (emailStatus === 'invalid') results.invalid++
-
-          await supabaseAdmin
-            .from('contacts')
-            .update({
-              email_status: emailStatus,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', contact.id)
+        if (domain) {
+          await supabase
+            .from('etablissements')
+            .update({ site_web: `https://${domain}` })
+            .eq('id', etablissement_id)
         }
 
-        // Rate limiting
-        await new Promise(resolve => setTimeout(resolve, 300))
-
-      } catch (err: any) {
-        results.errors.push(`${contact.email}: ${err.message}`)
+        return NextResponse.json({ domain })
       }
+
+      case 'search_contacts': {
+        // Rechercher les contacts d'un établissement via son domaine
+        const { data: etab } = await supabase
+          .from('etablissements')
+          .select('*')
+          .eq('id', etablissement_id)
+          .single()
+
+        if (!etab) return NextResponse.json({ error: 'Établissement non trouvé' }, { status: 404 })
+
+        let domain = etab.site_web?.replace('https://', '').replace('http://', '').replace('www.', '')
+        
+        if (!domain) {
+          domain = await findDomain(etab.nom, etab.ville)
+          if (domain) {
+            await supabase.from('etablissements').update({ site_web: `https://${domain}` }).eq('id', etablissement_id)
+          }
+        }
+
+        if (!domain) {
+          return NextResponse.json({ error: 'Domaine non trouvé', contacts: [] })
+        }
+
+        const emails = await searchEmails(domain)
+        const postes = POSTES_PAR_TYPE[etab.type] || POSTES_PAR_TYPE.DEFAULT
+        const createdContacts = []
+
+        for (const emailData of emails) {
+          // Vérifier si le contact existe déjà
+          const { data: existing } = await supabase
+            .from('contacts')
+            .select('id')
+            .eq('etablissement_id', etablissement_id)
+            .eq('email', emailData.value)
+            .single()
+
+          if (!existing) {
+            // Déterminer le poste basé sur le type ou position
+            let poste = 'Contact'
+            if (emailData.position) {
+              poste = emailData.position
+            } else if (emailData.department) {
+              poste = emailData.department
+            }
+
+            const { data: newContact } = await supabase
+              .from('contacts')
+              .insert({
+                etablissement_id,
+                prenom: emailData.first_name || '',
+                nom: emailData.last_name || '',
+                email: emailData.value,
+                email_status: emailData.confidence > 80 ? 'trouve' : 'a_verifier',
+                poste,
+                source: 'hunter',
+              })
+              .select()
+              .single()
+
+            if (newContact) createdContacts.push(newContact)
+          }
+        }
+
+        // Si pas assez de contacts trouvés, créer des contacts génériques pour chaque poste
+        if (createdContacts.length < 3) {
+          for (const poste of postes.slice(0, 3)) {
+            const { data: existingPoste } = await supabase
+              .from('contacts')
+              .select('id')
+              .eq('etablissement_id', etablissement_id)
+              .eq('poste', poste)
+              .single()
+
+            if (!existingPoste) {
+              const { data: newContact } = await supabase
+                .from('contacts')
+                .insert({
+                  etablissement_id,
+                  poste,
+                  email_status: 'a_trouver',
+                  source: 'auto_generated',
+                })
+                .select()
+                .single()
+
+              if (newContact) createdContacts.push(newContact)
+            }
+          }
+        }
+
+        return NextResponse.json({ 
+          domain,
+          contacts: createdContacts,
+          total_found: emails.length 
+        })
+      }
+
+      case 'verify_email': {
+        // Vérifier un email spécifique
+        if (!email) return NextResponse.json({ error: 'Email requis' }, { status: 400 })
+
+        // Essayer ZeroBounce d'abord, sinon Hunter
+        let result = await verifyEmailZeroBounce(email)
+        
+        if (result.status === 'unknown' || result.status === 'error') {
+          const hunterResult = await verifyEmailHunter(email)
+          result = { valid: hunterResult.valid, status: hunterResult.valid ? 'valid' : 'invalid' }
+        }
+
+        // Mettre à jour le contact si contact_id fourni
+        if (contact_id) {
+          await supabase
+            .from('contacts')
+            .update({ 
+              email_status: result.valid ? 'valide' : 'invalide',
+            })
+            .eq('id', contact_id)
+        }
+
+        return NextResponse.json(result)
+      }
+
+      case 'bulk_create_contacts': {
+        // Créer des contacts pour tous les établissements sans contact
+        const { data: etablissements } = await supabase
+          .from('etablissements')
+          .select('id, nom, type, ville')
+          .limit(100)
+
+        let created = 0
+        for (const etab of etablissements || []) {
+          const { data: existingContacts } = await supabase
+            .from('contacts')
+            .select('id')
+            .eq('etablissement_id', etab.id)
+
+          if (!existingContacts || existingContacts.length === 0) {
+            const postes = POSTES_PAR_TYPE[etab.type] || POSTES_PAR_TYPE.DEFAULT
+            
+            for (const poste of postes.slice(0, 3)) {
+              await supabase
+                .from('contacts')
+                .insert({
+                  etablissement_id: etab.id,
+                  poste,
+                  email_status: 'a_trouver',
+                  source: 'auto_generated',
+                })
+              created++
+            }
+          }
+        }
+
+        return NextResponse.json({ created })
+      }
+
+      default:
+        return NextResponse.json({ error: 'Action non reconnue' }, { status: 400 })
     }
 
-    return NextResponse.json({
-      success: true,
-      results,
-    })
-
   } catch (error: any) {
-    console.error('Validate emails error:', error)
-    return NextResponse.json(
-      { error: error.message || 'Failed to validate emails' },
-      { status: 500 }
-    )
+    console.error('Enrich error:', error)
+    return NextResponse.json({ error: error.message }, { status: 500 })
   }
+}
+
+// GET pour vérifier le statut des crédits API
+export async function GET() {
+  const status: any = {
+    hunter: { available: !!HUNTER_API_KEY, credits: null },
+    zerobounce: { available: !!ZEROBOUNCE_API_KEY, credits: null },
+  }
+
+  // Vérifier crédits Hunter
+  if (HUNTER_API_KEY) {
+    try {
+      const response = await fetch(`https://api.hunter.io/v2/account?api_key=${HUNTER_API_KEY}`)
+      const data = await response.json()
+      status.hunter.credits = data.data?.requests?.searches?.available || 0
+    } catch (err) {}
+  }
+
+  // Vérifier crédits ZeroBounce
+  if (ZEROBOUNCE_API_KEY) {
+    try {
+      const response = await fetch(`https://api.zerobounce.net/v2/getcredits?api_key=${ZEROBOUNCE_API_KEY}`)
+      const data = await response.json()
+      status.zerobounce.credits = data.Credits || 0
+    } catch (err) {}
+  }
+
+  return NextResponse.json(status)
 }

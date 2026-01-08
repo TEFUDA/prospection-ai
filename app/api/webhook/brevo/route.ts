@@ -1,26 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { supabaseAdmin } from '@/lib/supabase'
+import { createClient } from '@supabase/supabase-js'
+
+// Client Supabase avec service role pour les webhooks
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+  process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+)
 
 // Types d'events Brevo
-type BrevoEventType = 
-  | 'delivered' 
-  | 'opened' 
-  | 'clicked' 
-  | 'soft_bounce' 
-  | 'hard_bounce' 
-  | 'spam' 
-  | 'unsubscribed'
-  | 'blocked'
-
 interface BrevoWebhookPayload {
-  event: BrevoEventType
+  event: string
   email: string
-  'message-id': string
-  date: string
-  ts: number
+  'message-id'?: string
+  date?: string
+  ts?: number
   link?: string
   ip?: string
-  'user-agent'?: string
   tag?: string[]
 }
 
@@ -28,140 +23,135 @@ export async function POST(request: NextRequest) {
   try {
     const payload: BrevoWebhookPayload = await request.json()
     
-    console.log('Brevo Webhook received:', payload.event, payload.email)
+    console.log('📨 Brevo Webhook:', payload.event, payload.email)
 
-    const { 
-      event, 
-      email, 
-      'message-id': messageId,
-      link,
-      ip,
-      'user-agent': userAgent 
-    } = payload
+    const { event, email, 'message-id': messageId, link } = payload
 
-    // Trouver l'email envoyé correspondant
-    const { data: emailSent, error: findError } = await supabaseAdmin
-      .from('emails_sent')
-      .select('*, contacts(*)')
-      .eq('brevo_message_id', messageId)
-      .single()
+    // Trouver l'email envoyé correspondant par l'adresse email
+    const { data: emailRecord, error: findError } = await supabase
+      .from('emails_envoyes')
+      .select('*, contacts!inner(id, email, email_status)')
+      .eq('contacts.email', email)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
 
-    if (findError || !emailSent) {
-      // Essayer de trouver par email
-      const { data: emailByAddress } = await supabaseAdmin
-        .from('emails_sent')
-        .select('*, contacts(*)')
-        .eq('to_email', email)
-        .order('sent_at', { ascending: false })
-        .limit(1)
-        .single()
-
-      if (!emailByAddress) {
-        console.log('Email not found:', messageId, email)
-        return NextResponse.json({ received: true, found: false })
-      }
+    if (findError) {
+      console.error('Erreur recherche email:', findError)
     }
 
-    const targetEmail = emailSent || null
+    if (!emailRecord) {
+      console.log('Email non trouvé dans la base:', email)
+      // Même si on ne trouve pas, on retourne OK pour que Brevo ne réessaye pas
+      return NextResponse.json({ received: true, found: false })
+    }
 
-    // Enregistrer l'event
-    if (targetEmail) {
-      await supabaseAdmin
-        .from('email_events')
-        .insert({
-          email_sent_id: targetEmail.id,
-          event_type: event,
-          event_data: payload,
-          ip_address: ip,
-          user_agent: userAgent,
-          link_clicked: link,
-        })
+    const now = new Date().toISOString()
 
-      // Mettre à jour l'email envoyé
-      const updates: Record<string, any> = {}
-      
-      switch (event) {
-        case 'delivered':
-          updates.status = 'delivered'
-          break
-          
-        case 'opened':
-          updates.status = 'opened'
-          updates.opened_at = new Date().toISOString()
-          updates.open_count = (targetEmail.open_count || 0) + 1
-          break
-          
-        case 'clicked':
-          updates.status = 'clicked'
-          updates.clicked_at = new Date().toISOString()
-          updates.click_count = (targetEmail.click_count || 0) + 1
-          break
-          
-        case 'hard_bounce':
-        case 'soft_bounce':
-          updates.status = 'bounced'
-          break
-          
-        case 'spam':
-          updates.status = 'spam'
-          break
-          
-        case 'unsubscribed':
-          updates.status = 'unsubscribed'
-          break
-      }
-
-      if (Object.keys(updates).length > 0) {
-        await supabaseAdmin
-          .from('emails_sent')
-          .update(updates)
-          .eq('id', targetEmail.id)
-      }
-
-      // Mettre à jour les stats de prospection
-      if (targetEmail.contact_id) {
-        const prospectionUpdates: Record<string, any> = {}
-
-        if (event === 'opened') {
-          // Incrémenter le compteur d'ouvertures
-          await supabaseAdmin.rpc('increment_opens', { 
-            p_contact_id: targetEmail.contact_id 
+    // Mettre à jour selon le type d'événement
+    switch (event) {
+      case 'delivered':
+        await supabase
+          .from('emails_envoyes')
+          .update({ statut: 'delivered' })
+          .eq('id', emailRecord.id)
+        break
+        
+      case 'opened':
+      case 'unique_opened':
+        await supabase
+          .from('emails_envoyes')
+          .update({ 
+            statut: 'opened',
+            ouvert_at: emailRecord.ouvert_at || now // Ne met à jour que si pas déjà ouvert
           })
-        }
-
-        if (event === 'clicked') {
-          // Incrémenter le compteur de clics
-          await supabaseAdmin.rpc('increment_clicks', { 
-            p_contact_id: targetEmail.contact_id 
+          .eq('id', emailRecord.id)
+        
+        console.log('✅ Email ouvert:', email)
+        break
+        
+      case 'click':
+      case 'clicked':
+        await supabase
+          .from('emails_envoyes')
+          .update({ 
+            statut: 'clicked',
+            clique_at: emailRecord.clique_at || now,
+            lien_clique: link
           })
-        }
-
-        if (event === 'hard_bounce') {
-          // Marquer l'email comme invalide
-          await supabaseAdmin
+          .eq('id', emailRecord.id)
+        
+        console.log('✅ Lien cliqué:', email, link)
+        break
+        
+      case 'hard_bounce':
+      case 'soft_bounce':
+        await supabase
+          .from('emails_envoyes')
+          .update({ statut: 'bounced' })
+          .eq('id', emailRecord.id)
+        
+        // Marquer l'email du contact comme invalide
+        if (emailRecord.contact_id) {
+          await supabase
             .from('contacts')
-            .update({ email_status: 'invalid' })
-            .eq('id', targetEmail.contact_id)
+            .update({ email_status: 'invalide' })
+            .eq('id', emailRecord.contact_id)
         }
-      }
+        
+        console.log('❌ Bounce:', email)
+        break
+        
+      case 'spam':
+      case 'complaint':
+        await supabase
+          .from('emails_envoyes')
+          .update({ statut: 'spam' })
+          .eq('id', emailRecord.id)
+        
+        console.log('⚠️ Spam:', email)
+        break
+        
+      case 'unsubscribed':
+        await supabase
+          .from('emails_envoyes')
+          .update({ statut: 'unsubscribed' })
+          .eq('id', emailRecord.id)
+        
+        // Mettre à jour le statut de prospection
+        if (emailRecord.contact_id) {
+          await supabase
+            .from('prospection')
+            .update({ statut: 'pas_interesse' })
+            .eq('contact_id', emailRecord.contact_id)
+        }
+        
+        console.log('🚫 Désabonné:', email)
+        break
     }
 
     return NextResponse.json({ 
       received: true,
       event,
+      email,
       processed: true
     })
 
   } catch (error: any) {
-    console.error('Webhook error:', error)
-    return NextResponse.json(
-      { error: error.message },
-      { status: 500 }
-    )
+    console.error('❌ Webhook error:', error)
+    // On retourne quand même 200 pour éviter les retry de Brevo
+    return NextResponse.json({ 
+      received: true,
+      error: error.message 
+    })
   }
 }
 
-// Brevo envoie parfois en GET pour vérifier le webhook
+// GET pour vérifier que le webhook est actif
 export async function GET() {
-  return NextResponse.json({ status: 'Webhook active' })
+  return NextResponse.json({ 
+    status: 'active',
+    message: 'SoignantVoice Brevo Webhook',
+    timestamp: new Date().toISOString()
+  })
 }
