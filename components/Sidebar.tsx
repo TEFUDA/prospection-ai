@@ -6,70 +6,69 @@ import {
   LayoutDashboard, 
   Users, 
   Mail, 
-  Send,
+  Send, 
+  TrendingUp, 
   Calendar,
   Settings,
-  TrendingUp,
   Mic
 } from 'lucide-react'
 
-const navigation = [
-  { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Prospects', href: '/prospects', icon: Users },
-  { name: 'Séquences', href: '/sequences', icon: Mail },
-  { name: 'Emails envoyés', href: '/emails', icon: Send },
-  { name: 'Leads', href: '/leads', icon: TrendingUp },
-  { name: 'RDV', href: '/rdv', icon: Calendar },
-  { name: 'Paramètres', href: '/settings', icon: Settings },
+const menuItems = [
+  { href: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/prospects', label: 'Prospects', icon: Users },
+  { href: '/sequences', label: 'Séquences', icon: Mail },
+  { href: '/emails', label: 'Emails envoyés', icon: Send },
+  { href: '/leads', label: 'Leads', icon: TrendingUp },
+  { href: '/rdv', label: 'RDV', icon: Calendar },
+  { href: '/parametres', label: 'Paramètres', icon: Settings },
 ]
 
 export default function Sidebar() {
   const pathname = usePathname()
 
   return (
-    <div className="flex flex-col w-64 bg-white border-r border-gray-200">
+    <aside className="w-64 bg-white border-r border-gray-200 min-h-screen flex flex-col">
       {/* Logo */}
-      <div className="flex items-center h-16 px-6 border-b border-gray-200">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-purple-600 rounded-lg flex items-center justify-center">
-            <Mic className="w-5 h-5 text-white" />
+      <div className="p-6 border-b border-gray-200">
+        <Link href="/" className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-purple-600 rounded-xl flex items-center justify-center">
+            <Mic className="w-6 h-6 text-white" />
           </div>
-          <span className="text-lg font-bold text-gray-900">SoignantVoice</span>
-        </div>
+          <span className="text-xl font-bold text-gray-900">SoignantVoice</span>
+        </Link>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-4 py-4 space-y-1">
-        {navigation.map((item) => {
-          const isActive = pathname === item.href
-          return (
-            <Link
-              key={item.name}
-              href={item.href}
-              className={`flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
-                isActive
-                  ? 'bg-purple-50 text-purple-700'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-              }`}
-            >
-              <item.icon className={`w-5 h-5 ${isActive ? 'text-purple-700' : 'text-gray-400'}`} />
-              {item.name}
-            </Link>
-          )
-        })}
+      <nav className="flex-1 p-4">
+        <ul className="space-y-1">
+          {menuItems.map((item) => {
+            const isActive = pathname === item.href
+            return (
+              <li key={item.href}>
+                <Link
+                  href={item.href}
+                  className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
+                    isActive 
+                      ? 'bg-purple-50 text-purple-600 font-medium' 
+                      : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                  }`}
+                >
+                  <item.icon className={`w-5 h-5 ${isActive ? 'text-purple-600' : 'text-gray-400'}`} />
+                  {item.label}
+                </Link>
+              </li>
+            )
+          })}
+        </ul>
       </nav>
 
-      {/* Bottom section */}
+      {/* Footer */}
       <div className="p-4 border-t border-gray-200">
-        <div className="bg-gradient-to-r from-purple-600 to-indigo-600 rounded-lg p-4 text-white">
-          <p className="text-sm font-medium">🎯 Objectif</p>
-          <p className="text-2xl font-bold">100 clients</p>
-          <div className="mt-2 bg-white/20 rounded-full h-2">
-            <div className="bg-white rounded-full h-2" style={{ width: '5%' }} />
-          </div>
-          <p className="text-xs mt-1 text-white/80">5 / 100 (5%)</p>
+        <div className="px-4 py-3 bg-purple-50 rounded-lg">
+          <p className="text-sm font-medium text-purple-900">Prospection CRM</p>
+          <p className="text-xs text-purple-600">Hauts-de-France</p>
         </div>
       </div>
-    </div>
+    </aside>
   )
 }

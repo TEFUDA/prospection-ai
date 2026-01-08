@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@supabase/supabase-js'
 import { 
   Users, 
   Mail, 
@@ -15,15 +15,19 @@ import {
   Play,
   Zap
 } from 'lucide-react'
-import toast from 'react-hot-toast'
+import toast, { Toaster } from 'react-hot-toast'
 
-// Types
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+)
+
 interface Stats {
   totalProspects: number
-  emailsEnvoyes: number
-  tauxOuverture: number
-  tauxClic: number
-  reponses: number
+  totalContacts: number
+  emailsAtrouver: number
+  emailsTrouves: number
+  emailsValides: number
   rdvPlanifies: number
   pocEnCours: number
   clients: number
@@ -36,77 +40,67 @@ interface PipelineData {
   color: string
 }
 
-interface Activity {
-  type: string
-  contact: string
-  etablissement: string
-  time: string
-}
-
 export default function Dashboard() {
   const [stats, setStats] = useState<Stats>({
     totalProspects: 0,
-    emailsEnvoyes: 0,
-    tauxOuverture: 0,
-    tauxClic: 0,
-    reponses: 0,
+    totalContacts: 0,
+    emailsAtrouver: 0,
+    emailsTrouves: 0,
+    emailsValides: 0,
     rdvPlanifies: 0,
     pocEnCours: 0,
     clients: 0
   })
   const [pipeline, setPipeline] = useState<PipelineData[]>([])
-  const [recentActivity, setRecentActivity] = useState<Activity[]>([])
   const [loading, setLoading] = useState(true)
   const [runningCron, setRunningCron] = useState(false)
 
-  // Fetch real data from Supabase
   useEffect(() => {
     fetchStats()
     fetchPipeline()
-    fetchRecentActivity()
   }, [])
 
   const fetchStats = async () => {
     try {
-      // Total prospects
+      // Total établissements
       const { count: totalProspects } = await supabase
+        .from('etablissements')
+        .select('*', { count: 'exact', head: true })
+
+      // Total contacts
+      const { count: totalContacts } = await supabase
         .from('contacts')
         .select('*', { count: 'exact', head: true })
 
-      // Emails envoyés
-      const { count: emailsEnvoyes } = await supabase
-        .from('emails_sent')
+      // Emails à trouver
+      const { count: emailsAtrouver } = await supabase
+        .from('contacts')
         .select('*', { count: 'exact', head: true })
+        .eq('email_status', 'a_trouver')
 
-      // Emails ouverts
-      const { count: emailsOuverts } = await supabase
-        .from('emails_sent')
+      // Emails trouvés
+      const { count: emailsTrouves } = await supabase
+        .from('contacts')
         .select('*', { count: 'exact', head: true })
-        .gt('open_count', 0)
+        .eq('email_status', 'trouve')
 
-      // Emails cliqués
-      const { count: emailsCliques } = await supabase
-        .from('emails_sent')
+      // Emails validés
+      const { count: emailsValides } = await supabase
+        .from('contacts')
         .select('*', { count: 'exact', head: true })
-        .gt('click_count', 0)
-
-      // Réponses
-      const { count: reponses } = await supabase
-        .from('prospection')
-        .select('*', { count: 'exact', head: true })
-        .eq('a_repondu', true)
+        .eq('email_status', 'valide')
 
       // RDV planifiés
       const { count: rdvPlanifies } = await supabase
         .from('prospection')
         .select('*', { count: 'exact', head: true })
-        .eq('statut', 'rdv')
+        .eq('statut', 'rdv_pris')
 
       // POC en cours
       const { count: pocEnCours } = await supabase
         .from('prospection')
         .select('*', { count: 'exact', head: true })
-        .eq('statut', 'poc')
+        .eq('statut', 'interesse')
 
       // Clients
       const { count: clients } = await supabase
@@ -114,13 +108,12 @@ export default function Dashboard() {
         .select('*', { count: 'exact', head: true })
         .eq('statut', 'client')
 
-      const total = emailsEnvoyes || 1
       setStats({
         totalProspects: totalProspects || 0,
-        emailsEnvoyes: emailsEnvoyes || 0,
-        tauxOuverture: Math.round(((emailsOuverts || 0) / total) * 1000) / 10,
-        tauxClic: Math.round(((emailsCliques || 0) / total) * 1000) / 10,
-        reponses: reponses || 0,
+        totalContacts: totalContacts || 0,
+        emailsAtrouver: emailsAtrouver || 0,
+        emailsTrouves: emailsTrouves || 0,
+        emailsValides: emailsValides || 0,
         rdvPlanifies: rdvPlanifies || 0,
         pocEnCours: pocEnCours || 0,
         clients: clients || 0
@@ -134,22 +127,22 @@ export default function Dashboard() {
 
   const fetchPipeline = async () => {
     try {
-      const statuts = ['a_prospecter', 'sequence_en_cours', 'repondu', 'rdv', 'poc', 'client']
+      const statuts = ['a_prospecter', 'en_cours', 'interesse', 'rdv_pris', 'client', 'pas_interesse']
       const labels: Record<string, string> = {
         a_prospecter: 'À prospecter',
-        sequence_en_cours: 'Séquence en cours',
-        repondu: 'Ont répondu',
-        rdv: 'RDV planifié',
-        poc: 'POC en cours',
-        client: 'Clients'
+        en_cours: 'Séquence en cours',
+        interesse: 'Intéressé',
+        rdv_pris: 'RDV planifié',
+        client: 'Clients',
+        pas_interesse: 'Pas intéressé'
       }
       const colors: Record<string, string> = {
         a_prospecter: 'bg-gray-500',
-        sequence_en_cours: 'bg-blue-500',
-        repondu: 'bg-yellow-500',
-        rdv: 'bg-purple-500',
-        poc: 'bg-orange-500',
-        client: 'bg-green-500'
+        en_cours: 'bg-blue-500',
+        interesse: 'bg-yellow-500',
+        rdv_pris: 'bg-purple-500',
+        client: 'bg-green-500',
+        pas_interesse: 'bg-red-500'
       }
 
       const pipelineData: PipelineData[] = []
@@ -174,63 +167,19 @@ export default function Dashboard() {
     }
   }
 
-  const fetchRecentActivity = async () => {
-    try {
-      const { data: events } = await supabase
-        .from('email_events')
-        .select(`
-          event_type,
-          created_at,
-          emails_sent (
-            contacts (prenom, nom, etablissements (nom))
-          )
-        `)
-        .order('created_at', { ascending: false })
-        .limit(5)
-
-      if (events) {
-        setRecentActivity(events.map((e: any) => ({
-          type: e.event_type === 'opened' ? 'email_opened' : 
-                e.event_type === 'clicked' ? 'link_clicked' : 'email_sent',
-          contact: `${e.emails_sent?.contacts?.prenom || ''} ${e.emails_sent?.contacts?.nom || ''}`.trim() || 'Inconnu',
-          etablissement: e.emails_sent?.contacts?.etablissements?.nom || 'Inconnu',
-          time: formatTimeAgo(new Date(e.created_at))
-        })))
-      }
-    } catch (error) {
-      console.error('Error fetching activity:', error)
-    }
-  }
-
-  const formatTimeAgo = (date: Date) => {
-    const now = new Date()
-    const diff = now.getTime() - date.getTime()
-    const minutes = Math.floor(diff / 60000)
-    const hours = Math.floor(diff / 3600000)
-    const days = Math.floor(diff / 86400000)
-
-    if (minutes < 60) return `Il y a ${minutes} min`
-    if (hours < 24) return `Il y a ${hours}h`
-    return `Il y a ${days}j`
-  }
-
-  // Lancer le CRON manuellement
   const runCronNow = async () => {
     setRunningCron(true)
-    toast.loading('Lancement de l\'automatisation...')
+    toast.loading('Import en cours...')
 
     try {
-      const response = await fetch('/api/cron/master', {
-        headers: { 'Authorization': `Bearer ${process.env.NEXT_PUBLIC_CRON_SECRET || 'sv_cron_2024_secret_key'}` }
-      })
+      const response = await fetch('/api/cron/scrape-etablissements')
       const result = await response.json()
 
       toast.dismiss()
       if (result.success) {
-        toast.success(`✅ Terminé! ${result.report?.totalEmailsSent || 0} emails envoyés`)
+        toast.success(`✅ ${result.results?.newEstablishments || 0} nouveaux établissements importés!`)
         fetchStats()
         fetchPipeline()
-        fetchRecentActivity()
       } else {
         toast.error(`Erreur: ${result.error}`)
       }
@@ -244,39 +193,39 @@ export default function Dashboard() {
 
   const statCards = [
     { 
-      title: 'Total Prospects', 
+      title: 'Total Établissements', 
       value: stats.totalProspects, 
       icon: Users, 
       color: 'text-blue-600',
       bgColor: 'bg-blue-100'
     },
     { 
-      title: 'Emails envoyés', 
-      value: stats.emailsEnvoyes, 
-      icon: Send, 
+      title: 'Contacts créés', 
+      value: stats.totalContacts, 
+      icon: Users, 
       color: 'text-purple-600',
       bgColor: 'bg-purple-100'
     },
     { 
-      title: 'Taux ouverture', 
-      value: `${stats.tauxOuverture}%`, 
-      icon: Eye, 
+      title: 'Emails à trouver', 
+      value: stats.emailsAtrouver, 
+      icon: Mail, 
+      color: 'text-gray-600',
+      bgColor: 'bg-gray-100'
+    },
+    { 
+      title: 'Emails trouvés', 
+      value: stats.emailsTrouves, 
+      icon: Mail, 
+      color: 'text-blue-600',
+      bgColor: 'bg-blue-100'
+    },
+    { 
+      title: 'Emails validés', 
+      value: stats.emailsValides, 
+      icon: Mail, 
       color: 'text-green-600',
       bgColor: 'bg-green-100'
-    },
-    { 
-      title: 'Taux clic', 
-      value: `${stats.tauxClic}%`, 
-      icon: MousePointer, 
-      color: 'text-orange-600',
-      bgColor: 'bg-orange-100'
-    },
-    { 
-      title: 'Réponses', 
-      value: stats.reponses, 
-      icon: MessageSquare, 
-      color: 'text-yellow-600',
-      bgColor: 'bg-yellow-100'
     },
     { 
       title: 'RDV planifiés', 
@@ -286,11 +235,11 @@ export default function Dashboard() {
       bgColor: 'bg-indigo-100'
     },
     { 
-      title: 'POC en cours', 
+      title: 'Intéressés', 
       value: stats.pocEnCours, 
       icon: TrendingUp, 
-      color: 'text-pink-600',
-      bgColor: 'bg-pink-100'
+      color: 'text-yellow-600',
+      bgColor: 'bg-yellow-100'
     },
     { 
       title: 'Clients', 
@@ -304,13 +253,15 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div className="p-8 flex items-center justify-center h-full">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600"></div>
+        <RefreshCw className="w-12 h-12 animate-spin text-purple-600" />
       </div>
     )
   }
 
   return (
     <div className="p-8">
+      <Toaster position="top-right" />
+      
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
@@ -319,23 +270,23 @@ export default function Dashboard() {
         </div>
         <div className="flex gap-3">
           <button 
-            onClick={() => { fetchStats(); fetchPipeline(); fetchRecentActivity(); }}
-            className="btn btn-secondary"
+            onClick={() => { fetchStats(); fetchPipeline(); }}
+            className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center gap-2"
           >
-            <RefreshCw className="w-4 h-4 mr-2" />
+            <RefreshCw className="w-4 h-4" />
             Actualiser
           </button>
           <button 
             onClick={runCronNow}
             disabled={runningCron}
-            className="btn btn-primary"
+            className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 flex items-center gap-2 disabled:opacity-50"
           >
             {runningCron ? (
-              <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+              <RefreshCw className="w-4 h-4 animate-spin" />
             ) : (
-              <Zap className="w-4 h-4 mr-2" />
+              <Zap className="w-4 h-4" />
             )}
-            {runningCron ? 'En cours...' : 'Lancer maintenant'}
+            {runningCron ? 'En cours...' : 'Importer plus'}
           </button>
         </div>
       </div>
@@ -343,7 +294,7 @@ export default function Dashboard() {
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         {statCards.map((stat) => (
-          <div key={stat.title} className="card card-hover">
+          <div key={stat.title} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-gray-500">{stat.title}</p>
@@ -359,7 +310,7 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Pipeline */}
-        <div className="lg:col-span-2 card">
+        <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-gray-200 p-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-4">Pipeline de prospection</h2>
           <div className="space-y-4">
             {pipeline.map((item) => (
@@ -369,7 +320,7 @@ export default function Dashboard() {
                   <div className="h-8 bg-gray-100 rounded-lg overflow-hidden">
                     <div 
                       className={`h-full ${item.color} rounded-lg transition-all duration-500 flex items-center justify-end pr-2`}
-                      style={{ width: `${Math.max((item.count / stats.totalProspects) * 100, 5)}%` }}
+                      style={{ width: `${Math.max((item.count / (stats.totalContacts || 1)) * 100, item.count > 0 ? 8 : 0)}%` }}
                     >
                       <span className="text-white text-sm font-medium">{item.count}</span>
                     </div>
@@ -380,73 +331,60 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Activité récente */}
-        <div className="card">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">Activité récente</h2>
-          <div className="space-y-4">
-            {recentActivity.length > 0 ? recentActivity.map((activity, index) => (
-              <div key={index} className="flex items-start gap-3">
-                <div className={`p-2 rounded-lg ${
-                  activity.type === 'email_opened' ? 'bg-green-100' :
-                  activity.type === 'email_sent' ? 'bg-blue-100' :
-                  activity.type === 'link_clicked' ? 'bg-orange-100' :
-                  'bg-yellow-100'
-                }`}>
-                  {activity.type === 'email_opened' && <Eye className="w-4 h-4 text-green-600" />}
-                  {activity.type === 'email_sent' && <Send className="w-4 h-4 text-blue-600" />}
-                  {activity.type === 'link_clicked' && <MousePointer className="w-4 h-4 text-orange-600" />}
-                  {activity.type === 'reply' && <MessageSquare className="w-4 h-4 text-yellow-600" />}
+        {/* Actions rapides */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">Actions rapides</h2>
+          <div className="space-y-3">
+            <a href="/prospects" className="block p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+              <div className="flex items-center gap-3">
+                <Users className="w-5 h-5 text-purple-600" />
+                <div>
+                  <p className="font-medium text-gray-900">Voir les prospects</p>
+                  <p className="text-xs text-gray-500">{stats.totalProspects} établissements</p>
                 </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-900 truncate">{activity.contact}</p>
-                  <p className="text-xs text-gray-500 truncate">{activity.etablissement}</p>
-                </div>
-                <span className="text-xs text-gray-400 whitespace-nowrap">{activity.time}</span>
               </div>
-            )) : (
-              <p className="text-gray-500 text-sm">Aucune activité récente</p>
-            )}
+            </a>
+            <button 
+              onClick={runCronNow}
+              disabled={runningCron}
+              className="w-full p-3 bg-purple-50 rounded-lg hover:bg-purple-100 transition-colors text-left"
+            >
+              <div className="flex items-center gap-3">
+                <Play className="w-5 h-5 text-purple-600" />
+                <div>
+                  <p className="font-medium text-gray-900">Importer établissements</p>
+                  <p className="text-xs text-gray-500">100 par exécution</p>
+                </div>
+              </div>
+            </button>
           </div>
         </div>
       </div>
 
-      {/* Quick Actions */}
-      <div className="mt-8 card">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">🤖 Machine Automatique</h2>
-        <p className="text-gray-600 mb-4">
-          La machine tourne automatiquement tous les jours à 9h (lun-ven). Tu peux aussi la lancer manuellement.
-        </p>
-        <div className="bg-gray-50 rounded-lg p-4 mb-4">
-          <h3 className="font-medium text-gray-900 mb-2">Ce que fait la machine :</h3>
-          <ol className="text-sm text-gray-600 space-y-1">
-            <li>1️⃣ Scrape les nouveaux établissements (EHPAD, IME, ESAT...)</li>
-            <li>2️⃣ Trouve les emails des directeurs (Hunter.io)</li>
-            <li>3️⃣ Valide les emails (ZeroBounce)</li>
-            <li>4️⃣ Envoie la séquence de 4 emails automatiquement</li>
-            <li>5️⃣ T'envoie un rapport par email chaque matin</li>
-          </ol>
-        </div>
-        <div className="flex flex-wrap gap-4">
-          <button 
-            onClick={runCronNow}
-            disabled={runningCron}
-            className="btn btn-primary"
-          >
-            {runningCron ? (
-              <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-            ) : (
-              <Play className="w-4 h-4 mr-2" />
-            )}
-            {runningCron ? 'En cours...' : 'Lancer la machine maintenant'}
-          </button>
-          <a href="/prospects" className="btn btn-secondary">
-            <Users className="w-4 h-4 mr-2" />
-            Voir les prospects
-          </a>
-          <a href="/sequences" className="btn btn-secondary">
-            <Mail className="w-4 h-4 mr-2" />
-            Modifier les emails
-          </a>
+      {/* Info sur le fonctionnement */}
+      <div className="mt-8 bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <h2 className="text-lg font-semibold text-gray-900 mb-4">🤖 Comment ça marche</h2>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="p-4 bg-gray-50 rounded-lg">
+            <div className="text-2xl mb-2">1️⃣</div>
+            <h3 className="font-medium text-gray-900">Import FINESS</h3>
+            <p className="text-sm text-gray-500">1495 établissements des Hauts-de-France (EHPAD, IME, ESAT...)</p>
+          </div>
+          <div className="p-4 bg-gray-50 rounded-lg">
+            <div className="text-2xl mb-2">2️⃣</div>
+            <h3 className="font-medium text-gray-900">Enrichissement</h3>
+            <p className="text-sm text-gray-500">Hunter.io trouve les emails des directeurs</p>
+          </div>
+          <div className="p-4 bg-gray-50 rounded-lg">
+            <div className="text-2xl mb-2">3️⃣</div>
+            <h3 className="font-medium text-gray-900">Validation</h3>
+            <p className="text-sm text-gray-500">ZeroBounce valide les emails</p>
+          </div>
+          <div className="p-4 bg-gray-50 rounded-lg">
+            <div className="text-2xl mb-2">4️⃣</div>
+            <h3 className="font-medium text-gray-900">Prospection</h3>
+            <p className="text-sm text-gray-500">Séquence d'emails automatique via Brevo</p>
+          </div>
         </div>
       </div>
     </div>
