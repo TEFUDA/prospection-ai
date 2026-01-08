@@ -1,38 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabase'
+import finessData from '@/data/etablissements-finess.json'
 
 // =====================================================
-// SCRAPER AUTOMATIQUE - BASE FINESS (DATA.GOUV.FR)
+// SCRAPER AUTOMATIQUE - BASE FINESS (1495 établissements)
 // =====================================================
-// Source : API officielle data.gouv.fr
-// Contient TOUS les établissements médico-sociaux de France
-
-// Types d'établissements qu'on cible
-const TYPES_CIBLES = [
-  '500', '501', '502', // EHPAD, EHPA
-  '183', '186', '188', '189', '190', // IME, ITEP
-  '194', '382', // SESSAD
-  '238', '246', '249', // ESAT
-  '252', '253', // FAM
-  '255', // MAS
-  '195', '196', // CMPP, CAMSP
-  '390', '395', '445', '446', // SAVS, SAMSAH
-]
-
-// Mapping codes catégories vers types lisibles
-const CATEGORY_LABELS: Record<string, string> = {
-  '500': 'EHPAD', '501': 'EHPA', '502': 'EHPAD',
-  '183': 'IME', '186': 'ITEP', '188': 'IME', '189': 'IME', '190': 'IME',
-  '194': 'SESSAD', '382': 'SESSAD',
-  '238': 'ESAT', '246': 'ESAT', '249': 'ESAT',
-  '252': 'FAM', '253': 'FAM',
-  '255': 'MAS',
-  '195': 'CMPP', '196': 'CAMSP',
-  '390': 'SAVS', '395': 'SAMSAH', '445': 'SAVS', '446': 'SAMSAH',
-}
-
-// Départements Hauts-de-France
-const DEPARTEMENTS_HDF = ['02', '59', '60', '62', '80']
+// Source : Fichier JSON local basé sur data.gouv.fr FINESS
+// Région : Hauts-de-France (02, 59, 60, 62, 80)
 
 export async function GET(request: NextRequest) {
   // Vérifier le secret CRON
@@ -46,162 +20,150 @@ export async function GET(request: NextRequest) {
 
   try {
     const results = {
-      fetched: 0,
-      filtered: 0,
+      total: finessData.etablissements.length,
+      alreadyExists: 0,
       newEstablishments: 0,
       newContacts: 0,
       errors: [] as string[]
     }
 
-    // Récupérer les établissements déjà en base (pour éviter les doublons)
+    // Récupérer les établissements déjà en base (par numéro FINESS)
     const { data: existingEtabs } = await supabaseAdmin
       .from('etablissements')
-      .select('nom, ville')
+      .select('finess, nom')
     
-    const existingSet = new Set(
-      existingEtabs?.map(e => `${e.nom?.toLowerCase()}-${e.ville?.toLowerCase()}`) || []
+    const existingFiness = new Set(
+      existingEtabs?.map(e => e.finess).filter(Boolean) || []
+    )
+    const existingNames = new Set(
+      existingEtabs?.map(e => e.nom?.toLowerCase()).filter(Boolean) || []
     )
 
-    console.log(`Existing establishments: ${existingSet.size}`)
+    console.log(`Existing: ${existingFiness.size} by FINESS, ${existingNames.size} by name`)
+    console.log(`To process: ${finessData.etablissements.length} establishments`)
 
-    // Pour chaque département des Hauts-de-France
-    for (const dept of DEPARTEMENTS_HDF) {
+    // Traiter chaque établissement
+    for (const etab of finessData.etablissements) {
       try {
-        console.log(`Fetching department ${dept}...`)
-        
-        // Utiliser l'API OpenDataSoft qui héberge FINESS (plus stable)
-        const apiUrl = `https://public.opendatasoft.com/api/explore/v2.1/catalog/datasets/finess-etablissements-sanitaires-sociaux/records?where=dep_code%3D%22${dept}%22&limit=50`
-        
-        const response = await fetch(apiUrl, {
-          headers: {
-            'Accept': 'application/json',
-          },
-          signal: AbortSignal.timeout(20000) // 20s timeout
-        })
-
-        if (!response.ok) {
-          console.log(`API response not OK for dept ${dept}: ${response.status}`)
-          results.errors.push(`Dept ${dept}: API returned ${response.status}`)
+        // Skip si déjà en base (par FINESS ou par nom)
+        if (existingFiness.has(etab.finess) || existingNames.has(etab.nom?.toLowerCase())) {
+          results.alreadyExists++
           continue
         }
 
-        const data = await response.json()
-        const records = data.results || []
-        results.fetched += records.length
+        // Insérer l'établissement
+        const { data: newEtab, error: etabError } = await supabaseAdmin
+          .from('etablissements')
+          .insert({
+            finess: etab.finess,
+            nom: etab.nom?.substring(0, 255) || '',
+            type: etab.type || 'ESMS',
+            ville: etab.ville?.substring(0, 100) || '',
+            code_postal: etab.code_postal?.substring(0, 10) || '',
+            departement: etab.departement?.substring(0, 50) || '',
+            region: 'Hauts-de-France',
+            telephone: etab.telephone?.substring(0, 20) || '',
+            site_web: '',
+          })
+          .select()
+          .single()
 
-        console.log(`Dept ${dept}: fetched ${records.length} records`)
-
-        // Filtrer par type d'établissement cible
-        const etablissementsFiltres = records.filter((etab: any) => {
-          const catCode = etab.cat || etab.categetab || ''
-          return TYPES_CIBLES.includes(catCode.toString())
-        })
-
-        results.filtered += etablissementsFiltres.length
-        console.log(`Dept ${dept}: ${etablissementsFiltres.length} matching our criteria`)
-
-        // Insérer chaque établissement
-        for (const etab of etablissementsFiltres) {
-          try {
-            const nom = etab.rs || etab.raison_sociale || etab.nom || ''
-            const ville = etab.commune || etab.libcommune || ''
-            const key = `${nom.toLowerCase()}-${ville.toLowerCase()}`
-
-            // Skip si déjà en base ou nom vide
-            if (existingSet.has(key) || !nom) {
-              continue
-            }
-
-            // Ajouter au set pour éviter les doublons
-            existingSet.add(key)
-
-            const catCode = (etab.cat || etab.categetab || '').toString()
-            const type = CATEGORY_LABELS[catCode] || 'ESMS'
-            const codePostal = etab.cp || etab.codepostal || ''
-            const telephone = etab.telephone || ''
-            const departement = etab.dep_name || etab.libdepartement || ''
-
-            // Insérer l'établissement
-            const { data: newEtab, error: etabError } = await supabaseAdmin
+        if (etabError) {
+          // Si erreur de colonne FINESS manquante, on réessaye sans
+          if (etabError.message.includes('finess')) {
+            const { data: newEtab2, error: etabError2 } = await supabaseAdmin
               .from('etablissements')
               .insert({
-                nom: nom.substring(0, 255),
-                type,
-                ville: ville.substring(0, 100),
-                code_postal: codePostal.toString().substring(0, 10),
-                departement: departement.substring(0, 50),
+                nom: etab.nom?.substring(0, 255) || '',
+                type: etab.type || 'ESMS',
+                ville: etab.ville?.substring(0, 100) || '',
+                code_postal: etab.code_postal?.substring(0, 10) || '',
+                departement: etab.departement?.substring(0, 50) || '',
                 region: 'Hauts-de-France',
-                telephone: telephone.substring(0, 20),
+                telephone: etab.telephone?.substring(0, 20) || '',
                 site_web: '',
               })
               .select()
               .single()
-
-            if (etabError) {
-              results.errors.push(`Insert ${nom}: ${etabError.message}`)
+            
+            if (etabError2) {
+              results.errors.push(`Insert ${etab.nom}: ${etabError2.message}`)
               continue
             }
-
+            
             results.newEstablishments++
-
-            // Créer un contact "Directeur" par défaut
-            const { data: newContact, error: contactError } = await supabaseAdmin
-              .from('contacts')
-              .insert({
-                etablissement_id: newEtab.id,
-                poste: 'Directeur',
-                email_status: 'a_trouver',
-                source: 'finess_scrape',
-              })
-              .select()
-              .single()
-
-            if (!contactError && newContact) {
-              results.newContacts++
-
-              // Créer l'entrée de prospection
-              await supabaseAdmin
-                .from('prospection')
-                .insert({
-                  contact_id: newContact.id,
-                  statut: 'a_prospecter',
-                  sequence_id: '00000000-0000-0000-0000-000000000001',
-                })
+            existingNames.add(etab.nom?.toLowerCase())
+            
+            // Créer contact
+            if (newEtab2) {
+              await createContact(newEtab2.id, results)
             }
-
-          } catch (err: any) {
-            results.errors.push(`Process: ${err.message}`)
+            continue
           }
+          
+          results.errors.push(`Insert ${etab.nom}: ${etabError.message}`)
+          continue
+        }
+
+        results.newEstablishments++
+        existingFiness.add(etab.finess)
+        existingNames.add(etab.nom?.toLowerCase())
+
+        // Créer un contact "Directeur" par défaut
+        if (newEtab) {
+          await createContact(newEtab.id, results)
         }
 
       } catch (err: any) {
-        console.error(`Error fetching dept ${dept}:`, err.message)
-        results.errors.push(`Dept ${dept}: ${err.message}`)
+        results.errors.push(`Process ${etab.nom}: ${err.message}`)
       }
-
-      // Pause entre les départements
-      await new Promise(resolve => setTimeout(resolve, 300))
     }
+
+    console.log(`Completed: ${results.newEstablishments} new, ${results.alreadyExists} existing`)
 
     return NextResponse.json({
       success: true,
-      message: 'Scraping completed',
-      results
+      message: 'Import FINESS completed',
+      results: {
+        ...results,
+        errors: results.errors.slice(0, 10) // Limiter les erreurs affichées
+      }
     })
 
   } catch (error: any) {
     console.error('Scraper error:', error)
     return NextResponse.json(
-      { error: error.message || 'Scraping failed' },
+      { error: error.message || 'Import failed' },
       { status: 500 }
     )
   }
 }
 
-// POST : Lancer le scraping avec paramètres personnalisés
+async function createContact(etablissementId: string, results: any) {
+  const { data: newContact, error: contactError } = await supabaseAdmin
+    .from('contacts')
+    .insert({
+      etablissement_id: etablissementId,
+      poste: 'Directeur',
+      email_status: 'a_trouver',
+      source: 'finess_import',
+    })
+    .select()
+    .single()
+
+  if (!contactError && newContact) {
+    results.newContacts++
+
+    // Créer l'entrée de prospection
+    await supabaseAdmin
+      .from('prospection')
+      .insert({
+        contact_id: newContact.id,
+        statut: 'a_prospecter',
+      })
+  }
+}
+
 export async function POST(request: NextRequest) {
-  return NextResponse.json({
-    success: true,
-    message: 'Use GET endpoint for scraping'
-  })
+  return GET(request)
 }

@@ -1,10 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   experimental: {
-    serverActions: true,
+    serverComponentsExternalPackages: ['@supabase/supabase-js'],
   },
-  images: {
-    domains: ['localhost'],
+  // Permettre l'import de fichiers JSON
+  webpack: (config) => {
+    config.resolve.extensions.push('.json')
+    return config
   },
 }
 
