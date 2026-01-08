@@ -3,8 +3,9 @@
 import { useState, useEffect } from 'react'
 import { createClient } from '@supabase/supabase-js'
 import { 
-  Search, Download, Plus, Mail, Eye, Edit, RefreshCw, X, LayoutGrid, List,
-  Phone, Flame, Calendar, Users, GripVertical, MousePointer, Send, CheckCircle
+  Search, Download, Mail, Eye, RefreshCw, X, LayoutGrid, List,
+  Phone, Flame, Calendar, Users, GripVertical, MousePointer, Send, CheckCircle,
+  Sparkles, Brain, AlertCircle
 } from 'lucide-react'
 import toast, { Toaster } from 'react-hot-toast'
 
@@ -25,6 +26,8 @@ interface Prospect {
   etablissement_telephone: string
   contact_poste: string
   contact_email: string
+  contact_prenom: string
+  contact_nom: string
   email_status: string
   statut_prospection: string
   nb_emails_envoyes: number
@@ -32,6 +35,7 @@ interface Prospect {
   nb_clics: number
   dernier_email: string | null
   score_interet: number
+  icebreaker: string | null
 }
 
 interface Template {
@@ -69,16 +73,8 @@ const emailStatusColors: Record<string, string> = {
 }
 
 const typeColors: Record<string, string> = {
-  EHPAD: 'bg-blue-500',
-  IME: 'bg-green-500',
-  ESAT: 'bg-purple-500',
-  SESSAD: 'bg-orange-500',
-  FAM: 'bg-pink-500',
-  MAS: 'bg-red-500',
-  SAMSAH: 'bg-yellow-500',
-  SAVS: 'bg-teal-500',
-  ITEP: 'bg-indigo-500',
-  CMPP: 'bg-cyan-500',
+  EHPAD: 'bg-blue-500', IME: 'bg-green-500', ESAT: 'bg-purple-500',
+  SESSAD: 'bg-orange-500', FAM: 'bg-pink-500', MAS: 'bg-red-500',
 }
 
 const calculateScore = (emailStatus: string, nbEmailsEnvoyes: number, nbOuvertures: number, nbClics: number, statutProspection: string): number => {
@@ -116,27 +112,20 @@ export default function ProspectsPage() {
   const [emailSubject, setEmailSubject] = useState('')
   const [emailContent, setEmailContent] = useState('')
   const [sending, setSending] = useState(false)
+  const [useIcebreaker, setUseIcebreaker] = useState(true)
+  const [generatingIcebreaker, setGeneratingIcebreaker] = useState(false)
   
   const pageSize = 50
 
-  // Charger les templates
   const loadTemplates = async () => {
-    const { data } = await supabase
-      .from('email_templates')
-      .select('*')
-      .order('created_at')
+    const { data } = await supabase.from('email_templates').select('*').order('created_at')
     setTemplates(data || [])
   }
 
-  // Charger les prospects
   const loadProspects = async () => {
     setLoading(true)
     try {
-      let query = supabase
-        .from('etablissements')
-        .select('*', { count: 'exact' })
-        .order('created_at', { ascending: false })
-
+      let query = supabase.from('etablissements').select('*', { count: 'exact' }).order('created_at', { ascending: false })
       if (filterType !== 'all') query = query.eq('type', filterType)
       if (filterDept !== 'all') query = query.ilike('departement', `%${filterDept}%`)
       if (search) query = query.or(`nom.ilike.%${search}%,ville.ilike.%${search}%`)
@@ -184,10 +173,12 @@ export default function ProspectsPage() {
           etablissement_ville: etab.ville || '', etablissement_cp: etab.code_postal || '',
           etablissement_departement: etab.departement || '', etablissement_telephone: etab.telephone || '',
           contact_poste: contact.poste || 'Directeur', contact_email: contact.email || '',
+          contact_prenom: contact.prenom || '', contact_nom: contact.nom || '',
           email_status: emailStatus, statut_prospection: statutProspection,
           nb_emails_envoyes: emailStats.sent, nb_ouvertures: emailStats.opened,
           nb_clics: emailStats.clicked, dernier_email: emailStats.lastDate,
           score_interet: calculateScore(emailStatus, emailStats.sent, emailStats.opened, emailStats.clicked, statutProspection),
+          icebreaker: contact.icebreaker || null,
         }
       })
 
@@ -206,7 +197,7 @@ export default function ProspectsPage() {
     return () => clearTimeout(timer)
   }, [search])
 
-  // DRAG & DROP
+  // DRAG & DROP handlers...
   const handleDragStart = (e: React.DragEvent, prospect: Prospect) => { setDraggedProspect(prospect); e.dataTransfer.effectAllowed = 'move' }
   const handleDragOver = (e: React.DragEvent, status: string) => { e.preventDefault(); setDragOverColumn(status) }
   const handleDragLeave = () => { setDragOverColumn(null) }
@@ -214,7 +205,7 @@ export default function ProspectsPage() {
     e.preventDefault(); setDragOverColumn(null)
     if (!draggedProspect || draggedProspect.statut_prospection === newStatus) { setDraggedProspect(null); return }
     const prospectToUpdate = draggedProspect; setDraggedProspect(null)
-    setProspects(prev => prev.map(p => p.id === prospectToUpdate.id ? { ...p, statut_prospection: newStatus, score_interet: calculateScore(p.email_status, p.nb_emails_envoyes, p.nb_ouvertures, p.nb_clics, newStatus) } : p))
+    setProspects(prev => prev.map(p => p.id === prospectToUpdate.id ? { ...p, statut_prospection: newStatus } : p))
     try {
       if (prospectToUpdate.prospection_id) {
         await supabase.from('prospection').update({ statut: newStatus, derniere_action: new Date().toISOString() }).eq('id', prospectToUpdate.prospection_id)
@@ -228,7 +219,7 @@ export default function ProspectsPage() {
 
   const changeStatus = async (prospect: Prospect, newStatus: string) => {
     if (prospect.statut_prospection === newStatus) return
-    setProspects(prev => prev.map(p => p.id === prospect.id ? { ...p, statut_prospection: newStatus, score_interet: calculateScore(p.email_status, p.nb_emails_envoyes, p.nb_ouvertures, p.nb_clics, newStatus) } : p))
+    setProspects(prev => prev.map(p => p.id === prospect.id ? { ...p, statut_prospection: newStatus } : p))
     try {
       if (prospect.prospection_id) await supabase.from('prospection').update({ statut: newStatus, derniere_action: new Date().toISOString() }).eq('id', prospect.prospection_id)
       else if (prospect.contact_id) await supabase.from('prospection').insert({ contact_id: prospect.contact_id, statut: newStatus })
@@ -243,6 +234,7 @@ export default function ProspectsPage() {
     setSelectedTemplate('')
     setEmailSubject('')
     setEmailContent('')
+    setUseIcebreaker(!!prospect.icebreaker)
     setShowEmailModal(true)
   }
 
@@ -250,16 +242,44 @@ export default function ProspectsPage() {
     const template = templates.find(t => t.id === templateId)
     if (template) {
       setSelectedTemplate(templateId)
-      // Remplacer les variables
       let subject = template.sujet
       let content = template.contenu
       if (emailTarget) {
         content = content.replace(/\{\{nom_etablissement\}\}/g, emailTarget.etablissement_nom)
         content = content.replace(/\{\{ville\}\}/g, emailTarget.etablissement_ville)
         content = content.replace(/\{\{type\}\}/g, emailTarget.etablissement_type)
+        content = content.replace(/\{\{prenom\}\}/g, emailTarget.contact_prenom)
+        content = content.replace(/\{\{nom\}\}/g, emailTarget.contact_nom)
+        content = content.replace(/\{\{poste\}\}/g, emailTarget.contact_poste)
       }
       setEmailSubject(subject)
       setEmailContent(content)
+    }
+  }
+
+  // Générer Ice Breaker depuis le modal
+  const generateIcebreakerNow = async () => {
+    if (!emailTarget?.contact_id) return
+    setGeneratingIcebreaker(true)
+    try {
+      const response = await fetch('/api/contacts/icebreaker', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'generate', contact_id: emailTarget.contact_id })
+      })
+      const data = await response.json()
+      if (data.success && data.icebreaker) {
+        setEmailTarget({ ...emailTarget, icebreaker: data.icebreaker })
+        setUseIcebreaker(true)
+        toast.success('Ice breaker généré!')
+        loadProspects()
+      } else {
+        toast.error('Erreur génération')
+      }
+    } catch (err) {
+      toast.error('Erreur API')
+    } finally {
+      setGeneratingIcebreaker(false)
     }
   }
 
@@ -281,16 +301,17 @@ export default function ProspectsPage() {
           subject: emailSubject,
           html_content: emailContent,
           template_id: selectedTemplate || null,
+          include_icebreaker: useIcebreaker && !!emailTarget.icebreaker,
+          is_first_email: emailTarget.nb_emails_envoyes === 0,
         }),
       })
 
       const data = await response.json()
       if (!response.ok) throw new Error(data.error)
 
-      toast.success('Email envoyé avec succès!')
+      toast.success(`Email envoyé ${data.had_icebreaker ? 'avec ice breaker ✨' : ''}!`)
       setShowEmailModal(false)
       
-      // Mettre à jour localement
       setProspects(prev => prev.map(p => 
         p.id === emailTarget.id 
           ? { ...p, nb_emails_envoyes: p.nb_emails_envoyes + 1, statut_prospection: 'en_cours' }
@@ -311,7 +332,8 @@ export default function ProspectsPage() {
     const template = templates[0]
     if (!template) { toast.error('Créez d\'abord un template'); return }
     
-    if (!confirm(`Envoyer l'email "${template.sujet}" à ${selectedProspects.length} contacts ?`)) return
+    const withIcebreaker = selectedProspects.filter(p => p.icebreaker).length
+    if (!confirm(`Envoyer l'email "${template.sujet}" à ${selectedProspects.length} contacts ?\n(${withIcebreaker} avec ice breaker personnalisé)`)) return
 
     let sent = 0
     for (const prospect of selectedProspects) {
@@ -330,6 +352,8 @@ export default function ProspectsPage() {
             subject: template.sujet,
             html_content: content,
             template_id: template.id,
+            include_icebreaker: !!prospect.icebreaker,
+            is_first_email: prospect.nb_emails_envoyes === 0,
           }),
         })
         sent++
@@ -357,6 +381,7 @@ export default function ProspectsPage() {
   const filteredProspects = getFilteredProspects()
   const kanbanColumns = ['a_prospecter', 'en_cours', 'interesse', 'rdv_pris', 'client']
   const hotLeadsCount = prospects.filter(p => p.score_interet >= 30).length
+  const withIcebreakerCount = prospects.filter(p => p.icebreaker).length
 
   const toggleSelectAll = () => { selectedIds.length === filteredProspects.length ? setSelectedIds([]) : setSelectedIds(filteredProspects.map(p => p.id)) }
   const toggleSelect = (id: string) => { setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]) }
@@ -369,7 +394,7 @@ export default function ProspectsPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Prospects</h1>
-          <p className="text-gray-500 mt-1">{totalCount} établissements au total</p>
+          <p className="text-gray-500 mt-1">{totalCount} établissements • {withIcebreakerCount} avec ice breaker ✨</p>
         </div>
         <div className="flex gap-3">
           <button onClick={loadProspects} className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center gap-2" disabled={loading}>
@@ -409,7 +434,7 @@ export default function ProspectsPage() {
           </div>
           <select value={filterType} onChange={(e) => { setFilterType(e.target.value); setPage(0) }} className="px-4 py-2 border border-gray-300 rounded-lg">
             <option value="all">Tous les types</option>
-            {['EHPAD', 'IME', 'ESAT', 'SESSAD', 'FAM', 'MAS', 'SAMSAH', 'SAVS', 'ITEP'].map(t => <option key={t} value={t}>{t}</option>)}
+            {['EHPAD', 'IME', 'ESAT', 'SESSAD', 'FAM', 'MAS'].map(t => <option key={t} value={t}>{t}</option>)}
           </select>
           <select value={filterDept} onChange={(e) => { setFilterDept(e.target.value); setPage(0) }} className="px-4 py-2 border border-gray-300 rounded-lg">
             <option value="all">Tous les départements</option>
@@ -451,6 +476,7 @@ export default function ProspectsPage() {
                       <div className="flex items-start justify-between mb-2">
                         <span className={`px-2 py-0.5 rounded text-xs text-white ${typeColors[prospect.etablissement_type] || 'bg-gray-500'}`}>{prospect.etablissement_type}</span>
                         <div className="flex items-center gap-1">
+                          {prospect.icebreaker && <Sparkles className="w-4 h-4 text-pink-500" title="Ice breaker prêt" />}
                           {prospect.score_interet >= 30 && <Flame className="w-4 h-4 text-orange-500" />}
                           <GripVertical className="w-4 h-4 text-gray-300" />
                         </div>
@@ -490,7 +516,8 @@ export default function ProspectsPage() {
                   <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Type</th>
                   <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Ville</th>
                   <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Email</th>
-                  <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase"><Send className="w-3 h-3 inline" /> <Eye className="w-3 h-3 inline" /> <MousePointer className="w-3 h-3 inline" /></th>
+                  <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase">✨</th>
+                  <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Stats</th>
                   <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Statut</th>
                   <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Score</th>
                   <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Actions</th>
@@ -509,6 +536,13 @@ export default function ProspectsPage() {
                     <td className="px-3 py-3">
                       <p className="text-sm truncate max-w-32">{prospect.contact_email || '-'}</p>
                       <span className={`px-2 py-0.5 rounded-full text-xs ${emailStatusColors[prospect.email_status]}`}>{prospect.email_status}</span>
+                    </td>
+                    <td className="px-3 py-3">
+                      {prospect.icebreaker ? (
+                        <Sparkles className="w-5 h-5 text-pink-500" title="Ice breaker prêt" />
+                      ) : (
+                        <span className="text-gray-300">-</span>
+                      )}
                     </td>
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-2 text-sm">
@@ -558,10 +592,10 @@ export default function ProspectsPage() {
         </div>
       )}
 
-      {/* Modal Envoi Email */}
+      {/* Modal Envoi Email avec Ice Breaker */}
       {showEmailModal && emailTarget && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
+          <div className="bg-white rounded-xl max-w-4xl w-full max-h-[95vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-200 flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-bold text-gray-900">Envoyer un email</h2>
@@ -570,39 +604,95 @@ export default function ProspectsPage() {
               <button onClick={() => setShowEmailModal(false)} className="text-gray-400 hover:text-gray-600"><X className="w-6 h-6" /></button>
             </div>
             <div className="p-6 space-y-4">
+              
+              {/* Ice Breaker Section */}
+              <div className={`rounded-xl p-4 border-2 ${emailTarget.icebreaker ? 'bg-pink-50 border-pink-200' : 'bg-gray-50 border-gray-200'}`}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className={`w-5 h-5 ${emailTarget.icebreaker ? 'text-pink-500' : 'text-gray-400'}`} />
+                    <span className="font-medium text-gray-900">Ice Breaker personnalisé</span>
+                    {emailTarget.nb_emails_envoyes === 0 && (
+                      <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs">1er email</span>
+                    )}
+                  </div>
+                  {emailTarget.icebreaker && (
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={useIcebreaker} onChange={(e) => setUseIcebreaker(e.target.checked)} className="rounded border-gray-300 text-pink-600" />
+                      <span className="text-sm text-gray-600">Inclure</span>
+                    </label>
+                  )}
+                </div>
+                
+                {emailTarget.icebreaker ? (
+                  <div className="bg-white rounded-lg p-3 border border-pink-200">
+                    <p className="text-gray-700 italic">"{emailTarget.icebreaker}"</p>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3">
+                    <AlertCircle className="w-5 h-5 text-yellow-500" />
+                    <span className="text-sm text-gray-600">Pas d'ice breaker généré pour ce contact</span>
+                    <button onClick={generateIcebreakerNow} disabled={generatingIcebreaker}
+                      className="px-3 py-1 bg-pink-600 text-white rounded-lg text-sm hover:bg-pink-700 disabled:opacity-50 flex items-center gap-1">
+                      {generatingIcebreaker ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Brain className="w-4 h-4" />}
+                      Générer maintenant
+                    </button>
+                  </div>
+                )}
+                
+                {useIcebreaker && emailTarget.icebreaker && emailTarget.nb_emails_envoyes === 0 && (
+                  <p className="mt-2 text-xs text-pink-600">✨ L'ice breaker sera ajouté au début de l'email automatiquement</p>
+                )}
+              </div>
+
+              {/* Template Selection */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Choisir un template</label>
                 <div className="grid grid-cols-2 gap-2">
-                  {templates.map(t => (
+                  {templates.map((t, idx) => (
                     <button key={t.id} onClick={() => selectTemplate(t.id)}
                       className={`p-3 text-left rounded-lg border-2 transition-colors ${selectedTemplate === t.id ? 'border-purple-500 bg-purple-50' : 'border-gray-200 hover:border-gray-300'}`}>
-                      <p className="font-medium text-sm">{t.nom}</p>
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs">Email {idx + 1}</span>
+                        {idx === 0 && <span className="text-xs text-gray-400">(avec ice breaker)</span>}
+                      </div>
+                      <p className="font-medium text-sm mt-1">{t.nom}</p>
                       <p className="text-xs text-gray-500 truncate">{t.sujet}</p>
                     </button>
                   ))}
                 </div>
               </div>
+              
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Sujet</label>
                 <input type="text" value={emailSubject} onChange={(e) => setEmailSubject(e.target.value)}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500" placeholder="Sujet de l'email" />
               </div>
+              
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Contenu</label>
                 <textarea value={emailContent} onChange={(e) => setEmailContent(e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 h-64 font-mono text-sm" placeholder="Contenu HTML..." />
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 h-48 font-mono text-sm" placeholder="Contenu HTML..." />
               </div>
+              
               {emailContent && (
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Aperçu</label>
-                  <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: emailContent }} />
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Aperçu final</label>
+                  <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+                    {useIcebreaker && emailTarget.icebreaker && emailTarget.nb_emails_envoyes === 0 && (
+                      <div className="bg-pink-50 border-l-4 border-pink-400 p-3 mb-4 rounded">
+                        <p className="text-gray-700 italic">{emailTarget.icebreaker}</p>
+                      </div>
+                    )}
+                    <div className="prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: emailContent }} />
+                  </div>
                 </div>
               )}
+              
               <div className="flex gap-3 pt-4">
                 <button onClick={sendEmail} disabled={sending || !emailSubject || !emailContent}
                   className="px-6 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 flex items-center gap-2">
                   {sending ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                  {sending ? 'Envoi...' : 'Envoyer'}
+                  {sending ? 'Envoi...' : useIcebreaker && emailTarget.icebreaker ? 'Envoyer avec Ice Breaker ✨' : 'Envoyer'}
                 </button>
                 <button onClick={() => setShowEmailModal(false)} className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">Annuler</button>
               </div>
@@ -626,6 +716,17 @@ export default function ProspectsPage() {
                 <div><p className="text-sm text-gray-500">Téléphone</p>{selectedProspect.etablissement_telephone ? <a href={`tel:${selectedProspect.etablissement_telephone}`} className="font-medium text-purple-600">{selectedProspect.etablissement_telephone}</a> : <p>-</p>}</div>
                 <div><p className="text-sm text-gray-500">Email</p><p className="font-medium">{selectedProspect.contact_email || '-'}</p></div>
               </div>
+              
+              {selectedProspect.icebreaker && (
+                <div className="bg-pink-50 rounded-lg p-4 border border-pink-200">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Sparkles className="w-4 h-4 text-pink-500" />
+                    <span className="text-sm font-medium text-pink-700">Ice Breaker</span>
+                  </div>
+                  <p className="text-gray-700 italic text-sm">"{selectedProspect.icebreaker}"</p>
+                </div>
+              )}
+              
               <div className="bg-gray-50 rounded-lg p-4">
                 <h3 className="font-medium text-gray-900 mb-3">📧 Historique emails</h3>
                 <div className="grid grid-cols-3 gap-4 text-center">
@@ -634,23 +735,12 @@ export default function ProspectsPage() {
                   <div><div className={`text-2xl font-bold ${selectedProspect.nb_clics > 0 ? 'text-orange-600' : 'text-gray-400'}`}>{selectedProspect.nb_clics}</div><div className="text-xs text-gray-500">Clics</div></div>
                 </div>
               </div>
-              <div className="flex items-center justify-between bg-purple-50 rounded-lg p-4">
-                <div><p className="text-sm text-purple-600">Score d'intérêt</p></div>
-                <div className="flex items-center gap-2">
-                  <span className={`text-3xl font-bold ${selectedProspect.score_interet >= 50 ? 'text-green-600' : selectedProspect.score_interet >= 30 ? 'text-yellow-600' : 'text-gray-400'}`}>{selectedProspect.score_interet}</span>
-                  {selectedProspect.score_interet >= 50 && <Flame className="w-6 h-6 text-orange-500" />}
-                </div>
-              </div>
+              
               <div className="flex gap-3 pt-4 border-t">
                 {selectedProspect.contact_email && (
                   <button onClick={() => { setSelectedProspect(null); openEmailModal(selectedProspect) }} className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 flex items-center gap-2">
                     <Mail className="w-4 h-4" /> Envoyer email
                   </button>
-                )}
-                {selectedProspect.etablissement_telephone && (
-                  <a href={`tel:${selectedProspect.etablissement_telephone}`} className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center gap-2">
-                    <Phone className="w-4 h-4" /> Appeler
-                  </a>
                 )}
               </div>
             </div>

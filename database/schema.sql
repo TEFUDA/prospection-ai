@@ -195,3 +195,21 @@ BEGIN
     NULL;
   END IF;
 END $$;
+
+-- =====================================================
+-- MIGRATION : Colonnes Ice Breaker
+-- =====================================================
+
+-- Ajouter colonnes ice breaker
+DO $$ 
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'contacts' AND column_name = 'icebreaker') THEN
+    ALTER TABLE contacts ADD COLUMN icebreaker TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'contacts' AND column_name = 'icebreaker_context') THEN
+    ALTER TABLE contacts ADD COLUMN icebreaker_context TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'contacts' AND column_name = 'icebreaker_generated_at') THEN
+    ALTER TABLE contacts ADD COLUMN icebreaker_generated_at TIMESTAMP WITH TIME ZONE;
+  END IF;
+END $$;
