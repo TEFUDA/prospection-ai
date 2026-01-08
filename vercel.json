@@ -1,0 +1,13 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/master",
+      "schedule": "0 9 * * 1-5"
+    }
+  ],
+  "functions": {
+    "app/api/cron/**/*.ts": {
+      "maxDuration": 60
+    }
+  }
+}
