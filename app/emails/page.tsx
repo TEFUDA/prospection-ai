@@ -165,8 +165,8 @@ export default function EmailsPage() {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
-                      {email.ouvert_at && <Eye className="w-4 h-4 text-green-600" title="Ouvert" />}
-                      {email.clique_at && <MousePointer className="w-4 h-4 text-orange-600" title="Cliqué" />}
+                      {email.ouvert_at && <span title="Ouvert"><Eye className="w-4 h-4 text-green-600" /></span>}
+                      {email.clique_at && <span title="Cliqué"><MousePointer className="w-4 h-4 text-orange-600" /></span>}
                       {!email.ouvert_at && !email.clique_at && <span className="text-gray-400 text-sm">Envoyé</span>}
                     </div>
                   </td>
