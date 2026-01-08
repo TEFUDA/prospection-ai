@@ -195,7 +195,7 @@ export default function ProspectsPage() {
   }
 
   // Types uniques pour le filtre
-  const uniqueTypes = [...new Set(prospects.map(p => p.etablissement_type))].filter(Boolean)
+  const uniqueTypes = Array.from(new Set(prospects.map(p => p.etablissement_type))).filter(Boolean)
 
   return (
     <div className="p-8">
